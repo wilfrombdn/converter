@@ -6,13 +6,16 @@
 <title>Converter</title>
 <script>
 // Cross-origin isolation via service worker (see coi-sw.js); reloads once after it takes control.
-if (!window.crossOriginIsolated && "serviceWorker" in navigator && window.isSecureContext) {
-  navigator.serviceWorker.register("coi-sw.js").then(reg => {
-    let done = false;
-    try { done = sessionStorage.getItem("coi") === "1"; sessionStorage.setItem("coi", "1"); } catch {}
-    if (done) return;
-    if (reg.active) location.reload();
-    else navigator.serviceWorker.addEventListener("controllerchange", () => location.reload());
+if (window.crossOriginIsolated) {
+  try { sessionStorage.removeItem("coi"); } catch {}
+} else if ("serviceWorker" in navigator && window.isSecureContext) {
+  navigator.serviceWorker.register("coi-sw.js").then(() => {
+    let tried = false;
+    try { tried = sessionStorage.getItem("coi") === "1"; } catch {}
+    if (tried) return; // already reloaded once without becoming isolated; don't loop
+    const go = () => { try { sessionStorage.setItem("coi", "1"); } catch {} location.reload(); };
+    if (navigator.serviceWorker.controller) go();
+    else navigator.serviceWorker.addEventListener("controllerchange", go);
   }).catch(() => {});
 }
 </script>
