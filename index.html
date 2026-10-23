@@ -4,6 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Converter</title>
+<script>
+// Cross-origin isolation via service worker (see coi-sw.js); reloads once after it takes control.
+if (!window.crossOriginIsolated && "serviceWorker" in navigator && window.isSecureContext) {
+  navigator.serviceWorker.register("coi-sw.js").then(reg => {
+    let done = false;
+    try { done = sessionStorage.getItem("coi") === "1"; sessionStorage.setItem("coi", "1"); } catch {}
+    if (done) return;
+    if (reg.active) location.reload();
+    else navigator.serviceWorker.addEventListener("controllerchange", () => location.reload());
+  }).catch(() => {});
+}
+</script>
 <style>
   :root{--bg:#f6f7f9;--fg:#1c1f24;--card:#fff;--muted:#6b7280;--accent:#2563eb;--bd:#d6dae1}
   @media (prefers-color-scheme:dark){:root{--bg:#111318;--fg:#e8eaed;--card:#1a1d24;--muted:#9aa1ad;--accent:#6b9bff;--bd:#2e333d}}
@@ -45,7 +57,7 @@
   <small id="hint"></small>
   <ul id="list"></ul></div>
   <div id="info" hidden></div>
-  <small>Some converters use a large engine that downloads the first time you use it and is then cached: video and audio ~30 MB, extra image formats ~15 MB, document formats ~60 MB. Large videos can be slow. PDF to Word works on text-based PDFs and rebuilds paragraphs and headings; tables and images are not preserved.</small>
+  <small>Some converters use a large engine that downloads the first time you use it and is then cached: video and audio ~30 MB, extra image formats ~15 MB, document formats ~60 MB, old Office files (.doc, .xls, .ppt) and full-layout PDFs ~250 MB. Large videos can be slow, and the Office engine needs a few hundred MB of memory (Chrome, Edge or Firefox). PDF to Word works on text-based PDFs and rebuilds paragraphs and headings; tables and images are not preserved.</small>
 </main>
 <script src="app.js"></script>
 </body>

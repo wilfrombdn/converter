@@ -308,6 +308,56 @@ async function viaPandoc(file, to, ctx) {
   return { blob: await z.generateAsync({ type: "blob" }), ext: "zip" };
 }
 
+// ---------- LibreOffice (wasm) ----------
+// The engine (~250 MB) is too big for the repo, so soffice.wasm/.data come from unpkg while the small
+// glue scripts live in ./lo. They are downloaded up front (with progress) and kept in Cache Storage,
+// because the worker gives up if startup takes more than 2 minutes.
+const LO_CDN = "https://unpkg.com/@matbee/libreoffice-converter@2.7.2/wasm/";
+const LO_SIZES = { "soffice.wasm": 147416331, "soffice.data": 99735918 };
+let officeP = null, officeStatus = () => {};
+async function loBlob(name, status) {
+  const url = LO_CDN + name;
+  let cache = null;
+  try { cache = await caches.open("converter-lo-v1"); const hit = await cache.match(url); if (hit) return hit.blob(); } catch {}
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`download failed (${res.status})`);
+  const reader = res.body.getReader(), chunks = [];
+  let got = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value); got += value.length;
+    status(`Downloading office engine (${name === "soffice.wasm" ? "1/2" : "2/2"}) ${Math.min(99, Math.round(100 * got / LO_SIZES[name]))}%`);
+  }
+  const blob = new Blob(chunks, { type: name.endsWith(".wasm") ? "application/wasm" : "application/octet-stream" });
+  try { if (cache) await cache.put(url, new Response(blob)); } catch {}
+  return blob;
+}
+function office(status) {
+  officeStatus = status;
+  return officeP ||= (async () => {
+    if (!self.crossOriginIsolated) throw new Error("page isn't cross-origin isolated; reload once, or use Chrome, Edge or Firefox");
+    const wasm = URL.createObjectURL(await loBlob("soffice.wasm", s => officeStatus(s)));
+    const data = URL.createObjectURL(await loBlob("soffice.data", s => officeStatus(s)));
+    const abs = p => new URL(p, location.href).href;
+    const mod = await import(abs("lo/browser.js"));
+    const conv = new mod.WorkerBrowserConverter({
+      sofficeJs: abs("lo/soffice.js"), sofficeWorkerJs: abs("lo/soffice.worker.js"),
+      sofficeWasm: wasm, sofficeData: data, browserWorkerJs: abs("lo/browser.worker.global.js"),
+      onProgress: i => officeStatus(`Starting office engine ${Math.round(i.percent || 0)}%`),
+    });
+    officeStatus("Starting office engine...");
+    await conv.initialize();
+    return conv;
+  })().catch(e => { officeP = null; throw e; });
+}
+async function viaOffice(file, to, ctx) {
+  const conv = await office(ctx.status);
+  ctx.status("Converting...");
+  const res = await conv.convert(new Uint8Array(await file.arrayBuffer()), { outputFormat: to }, file.name);
+  return new Blob([res.data], { type: res.mimeType });
+}
+
 // ---------- subtitles ----------
 const pad2 = n => String(n).padStart(2, "0");
 function srtToVtt(text) {
@@ -349,7 +399,7 @@ const imgToPdf = async f => {
   d.addImage(c.toDataURL("image/jpeg", 0.92), "JPEG", 0, 0, c.width, c.height);
   return d.output("blob");
 };
-const R = (cats, from, to, fn) => ({ cats, from, to, fn });
+const R = (cats, from, to, fn, extra) => ({ cats, from, to, fn, ...extra });
 const textBlob = (s, type = "text/plain") => new Blob([s], { type });
 const IMG_OUT = { png: img("image/png"), jpg: img("image/jpeg", 0.92), webp: img("image/webp", 0.92), pdf: imgToPdf };
 
@@ -384,6 +434,22 @@ const MAGICK_IN = ["png", "jpg", "gif", "bmp", "dib", "tif", "tiff", "webp", "av
 const MAGICK_OUT = ["png", "jpg", "gif", "bmp", "tiff", "ico", "tga", "avif", "jxl", "webp", "psd", "pcx", "ppm", "dds", "qoi", "exr", "hdr", "sgi", "ras", "jp2", "dpx"];
 for (const to of MAGICK_OUT)
   ROUTES.push(R([6], MAGICK_IN.filter(e => e !== to && !(to === "tiff" && e === "tif")), to, (f, c) => viaMagick(f, to, c)));
+// LibreOffice: legacy Office formats (.doc/.xls/.ppt and their template/show variants, which share the
+// same binary format) plus PDF and legacy-format output for the modern ones. Like pandoc, cats come from
+// the catalogue. docx to PDF already exists as a quick text-only route, so the full-layout one is separate.
+const LO_FAMILIES = [
+  { from: ["doc", "dot", "rtf", "odt", "docx"], to: ["pdf", "docx", "doc", "odt", "rtf", "txt", "html"] },
+  { from: ["xls", "xlt", "xlsx", "ods"], to: ["pdf", "xlsx", "xls", "ods", "csv", "html"] },
+  { from: ["ppt", "pps", "pot", "pptx", "odp"], to: ["pdf", "pptx", "ppt", "odp"] },
+];
+for (const { from, to } of LO_FAMILIES)
+  for (const out of to)
+    for (const inExt of from) {
+      if (inExt === out) continue;
+      const layout = inExt === "docx" && out === "pdf";
+      ROUTES.push(R(null, [inExt], layout ? "pdf-layout" : out, (f, c) => viaOffice(f, out, c),
+        layout ? { ext: "pdf", label: "PDF (full layout, large download)" } : undefined));
+    }
 // Pandoc: cats are resolved from the catalogue at start-up (cats: null).
 for (const inExt of Object.keys(PD_IN))
   for (const to of Object.keys(PD_OUT))
@@ -399,8 +465,8 @@ function selectCat(c) {
   $("work").hidden = !c.live;
   $("info").hidden = c.live;
   if (c.live) {
-    const outs = [...new Set(c.routes.map(r => r.to))];
-    target.innerHTML = outs.map(o => `<option value="${o}">${o.toUpperCase()}</option>`).join("");
+    const outs = new Map(c.routes.map(r => [r.to, r.label || r.to.toUpperCase()]));
+    target.innerHTML = [...outs].map(([o, label]) => `<option value="${o}">${label}</option>`).join("");
     input.accept = c.from.map(e => "." + e).join(",");
     $("hint").textContent = "Accepts: " + c.from.map(e => e.toUpperCase()).join(", ");
   } else {
@@ -476,7 +542,7 @@ async function run(f, c, to, st) {
   status("Converting...");
   try {
     let out = await route.fn(f, { status });
-    const ext = out.ext || to;
+    const ext = out.ext || route.ext || to;
     out = out.blob || out;
     const a = document.createElement("a");
     a.href = URL.createObjectURL(out);
