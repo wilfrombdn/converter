@@ -9,119 +9,38 @@
   @media (prefers-color-scheme:dark){:root{--bg:#111318;--fg:#e8eaed;--card:#1a1d24;--muted:#9aa1ad;--accent:#6b9bff;--bd:#2e333d}}
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif}
-  main{max-width:640px;margin:0 auto;padding:40px 16px}
+  main{max-width:720px;margin:0 auto;padding:32px 16px}
   h1{margin:0 0 4px;font-size:28px}
-  p.sub{margin:0 0 24px;color:var(--muted)}
-  #drop{border:2px dashed var(--bd);border-radius:12px;background:var(--card);padding:40px 16px;text-align:center;cursor:pointer}
+  p.sub{margin:0 0 20px;color:var(--muted)}
+  nav{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}
+  nav button{background:var(--card);color:var(--fg);border:1px solid var(--bd)}
+  nav button[aria-selected=true]{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .opts{display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+  select{font:inherit;padding:6px 10px;border-radius:8px;border:1px solid var(--bd);background:var(--card);color:var(--fg)}
+  #drop{border:2px dashed var(--bd);border-radius:12px;background:var(--card);padding:36px 16px;text-align:center;cursor:pointer}
   #drop.over{border-color:var(--accent)}
+  #drop p{margin:0}
   button{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:8px 16px;font:inherit;cursor:pointer}
   ul{list-style:none;padding:0;margin:20px 0}
   li{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:10px 12px;margin-bottom:8px;display:flex;justify-content:space-between;gap:12px;align-items:center}
-  li span.st{color:var(--muted);font-size:14px;white-space:nowrap}
+  li b{overflow-wrap:anywhere;font-weight:600}
+  li span.st{color:var(--muted);font-size:14px;text-align:right}
   a{color:var(--accent)}
-  small{color:var(--muted)}
+  small{color:var(--muted);display:block}
 </style>
 </head>
 <body>
 <main>
   <h1>Converter</h1>
-  <p class="sub">PDF to editable Word (.docx). Runs entirely in your browser; files never leave your device.</p>
-  <div id="drop"><p>Drop PDFs here or <button type="button" id="pick">choose files</button></p>
-    <input id="file" type="file" accept="application/pdf,.pdf" multiple hidden></div>
+  <p class="sub">Convert files between formats. Everything runs in your browser; files never leave your device.</p>
+  <nav id="tabs" role="tablist"></nav>
+  <div class="opts"><label for="target">Convert to</label><select id="target"></select></div>
+  <div id="drop"><p>Drop files here or <button type="button" id="pick">choose files</button></p>
+    <input id="file" type="file" multiple hidden></div>
+  <small id="hint"></small>
   <ul id="list"></ul>
-  <small>Works on text-based PDFs. Layout is rebuilt as paragraphs, headings and bold/italic text; complex tables and images are not preserved. Scanned PDFs need OCR (not supported yet).</small>
+  <small>Video and audio use a ~30 MB converter engine that downloads the first time you use them, and large videos can be slow. PDF to Word works on text-based PDFs and rebuilds paragraphs and headings; tables and images are not preserved.</small>
 </main>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.js"></script>
-<script>
-pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-const $ = id => document.getElementById(id);
-const drop = $("drop"), file = $("file"), list = $("list");
-
-$("pick").onclick = e => { e.stopPropagation(); file.click(); };
-drop.onclick = () => file.click();
-file.onchange = () => { handle([...file.files]); file.value = ""; };
-drop.ondragover = e => { e.preventDefault(); drop.classList.add("over"); };
-drop.ondragleave = () => drop.classList.remove("over");
-drop.ondrop = e => { e.preventDefault(); drop.classList.remove("over"); handle([...e.dataTransfer.files]); };
-
-async function handle(files) {
-  for (const f of files) {
-    if (!/\.pdf$/i.test(f.name)) continue;
-    const li = document.createElement("li");
-    li.innerHTML = "<b></b><span class='st'>Converting...</span>";
-    li.firstChild.textContent = f.name;
-    list.appendChild(li);
-    const st = li.querySelector(".st");
-    try {
-      const blob = await convert(f, (p, n) => st.textContent = `Page ${p}/${n}`);
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = f.name.replace(/\.pdf$/i, "") + ".docx";
-      a.textContent = "Download .docx";
-      st.replaceChildren(a);
-    } catch (err) {
-      st.textContent = "Failed: " + (err.message || err);
-    }
-  }
-}
-
-async function convert(f, progress) {
-  const { Document, Packer, Paragraph, TextRun, HeadingLevel, PageBreak } = docx;
-  const pdf = await pdfjsLib.getDocument({ data: await f.arrayBuffer() }).promise;
-  const pages = [];
-  const sizes = [];
-  for (let p = 1; p <= pdf.numPages; p++) {
-    progress(p, pdf.numPages);
-    const page = await pdf.getPage(p);
-    const tc = await page.getTextContent();
-    const items = tc.items.filter(i => i.str !== "" || i.hasEOL).map(i => ({
-      s: i.str, x: i.transform[4], y: i.transform[5],
-      size: Math.abs(i.transform[3]) || i.height || 10,
-      font: (tc.styles[i.fontName] || {}).fontFamily || "", name: i.fontName
-    }));
-    // group into lines by y
-    items.sort((a, b) => b.y - a.y || a.x - b.x);
-    const lines = [];
-    for (const it of items) {
-      const l = lines[lines.length - 1];
-      if (l && Math.abs(l.y - it.y) < it.size * 0.4) l.items.push(it);
-      else lines.push({ y: it.y, items: [it] });
-    }
-    lines.forEach(l => { l.items.sort((a, b) => a.x - b.x); l.size = Math.max(...l.items.map(i => i.size)); sizes.push(l.size); });
-    pages.push(lines);
-  }
-  const freq = {};
-  sizes.forEach(s => { const k = Math.round(s); freq[k] = (freq[k] || 0) + 1; });
-  const body = +Object.keys(freq).sort((a, b) => freq[b] - freq[a])[0] || 10;
-
-  const children = [];
-  pages.forEach((lines, pi) => {
-    let para = null, prev = null;
-    const flush = () => { if (para) children.push(new Paragraph({ children: para.runs, heading: para.heading, spacing: { after: 120 } })); para = null; };
-    if (pi > 0) children.push(new Paragraph({ children: [new PageBreak()] }));
-    for (const l of lines) {
-      const gap = prev ? prev.y - l.y : 0;
-      const heading = l.size >= body * 1.5 ? HeadingLevel.HEADING_1 : l.size >= body * 1.2 ? HeadingLevel.HEADING_2 : undefined;
-      // new paragraph on big gap, heading change, or no prior paragraph
-      if (!para || gap > l.size * 1.8 || heading !== para.heading || heading) { flush(); para = { runs: [], heading }; }
-      else para.runs.push(new TextRun(" "));
-      let lastEnd = null;
-      for (const it of l.items) {
-        const bold = /bold|black|heavy/i.test(it.font + it.name);
-        const italic = /italic|oblique/i.test(it.font + it.name);
-        const sp = lastEnd !== null && it.x - lastEnd > it.size * 0.15 && !/^\s/.test(it.s) ? " " : "";
-        para.runs.push(new TextRun({ text: sp + it.s, bold, italics: italic, size: Math.round(it.size * 2) }));
-        lastEnd = it.x + it.s.length * it.size * 0.5;
-      }
-      prev = l;
-    }
-    flush();
-  });
-  if (!children.length) throw new Error("no text found (scanned PDF?)");
-  const doc = new Document({ sections: [{ children }] });
-  return Packer.toBlob(doc);
-}
-</script>
+<script src="app.js"></script>
 </body>
 </html>
