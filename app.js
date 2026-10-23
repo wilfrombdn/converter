@@ -31,7 +31,7 @@ async function pdfjs() {
 }
 
 // ---------- helpers ----------
-const extOf = n => { const e = n.split(".").pop().toLowerCase(); return e === "jpeg" ? "jpg" : e === "htm" ? "html" : e === "markdown" ? "md" : e; };
+const extOf = n => { const e = n.split(".").pop().toLowerCase(); return e === "jpeg" ? "jpg" : e === "htm" ? "html" : e === "markdown" ? "md" : e === "text" ? "txt" : e; };
 const canvasBlob = (c, type, q) => new Promise(r => c.toBlob(r, type, q));
 
 async function loadImage(file) {
@@ -351,11 +351,29 @@ function office(status) {
     return conv;
   })().catch(e => { officeP = null; throw e; });
 }
+// Some conversions occasionally stall inside the wasm engine. A watchdog restarts the engine and retries once.
 async function viaOffice(file, to, ctx) {
-  const conv = await office(ctx.status);
-  ctx.status("Converting...");
-  const res = await conv.convert(new Uint8Array(await file.arrayBuffer()), { outputFormat: to }, file.name);
-  return new Blob([res.data], { type: res.mimeType });
+  const data = new Uint8Array(await file.arrayBuffer());
+  const limit = 30000 + Math.min(150000, data.length / 50);
+  for (let attempt = 0; ; attempt++) {
+    const conv = await office(ctx.status);
+    ctx.status(attempt ? "Engine stalled, restarting..." : "Converting...");
+    let timer;
+    try {
+      const res = await Promise.race([
+        conv.convert(data.slice(), { outputFormat: to }, file.name),
+        new Promise((_, rej) => { timer = setTimeout(() => rej(new Error("stalled")), limit); }),
+      ]);
+      clearTimeout(timer);
+      return new Blob([res.data], { type: res.mimeType });
+    } catch (e) {
+      clearTimeout(timer);
+      if (e.message !== "stalled") throw e;
+      try { conv.worker.terminate(); } catch {}
+      officeP = null;
+      if (attempt >= 1) throw new Error("the Office engine stalled on this file. Try a different output format.");
+    }
+  }
 }
 
 // ---------- subtitles ----------
@@ -435,12 +453,13 @@ const MAGICK_OUT = ["png", "jpg", "gif", "bmp", "tiff", "ico", "tga", "avif", "j
 for (const to of MAGICK_OUT)
   ROUTES.push(R([6], MAGICK_IN.filter(e => e !== to && !(to === "tiff" && e === "tif")), to, (f, c) => viaMagick(f, to, c), { engine: "magick" }));
 // LibreOffice: legacy Office formats (.doc/.xls/.ppt and their template/show variants, which share the
-// same binary format) plus PDF and legacy-format output for the modern ones. Like pandoc, cats come from
+// same binary format) plus PDF and legacy-format output for the modern ones. Writer to HTML and Impress to
+// ODP are left out: both hang every time in this wasm build. Like pandoc, cats come from
 // the catalogue. docx to PDF already exists as a quick text-only route, so the full-layout one is separate.
 const LO_FAMILIES = [
-  { from: ["doc", "dot", "rtf", "odt", "docx"], to: ["pdf", "docx", "doc", "odt", "rtf", "txt", "html"] },
+  { from: ["doc", "dot", "docm", "dotx", "dotm", "rtf", "odt", "ott", "fodt", "sxw", "stw", "txt", "docx"], to: ["pdf", "docx", "doc", "odt", "rtf", "txt"] },
   { from: ["xls", "xlt", "xlsx", "ods"], to: ["pdf", "xlsx", "xls", "ods", "csv", "html"] },
-  { from: ["ppt", "pps", "pot", "pptx", "odp"], to: ["pdf", "pptx", "ppt", "odp"] },
+  { from: ["ppt", "pps", "pot", "pptx", "odp"], to: ["pdf", "pptx", "ppt"] },
 ];
 for (const { from, to } of LO_FAMILIES)
   for (const out of to)
@@ -450,6 +469,16 @@ for (const { from, to } of LO_FAMILIES)
       ROUTES.push(R(null, [inExt], layout ? "pdf-layout" : out, (f, c) => viaOffice(f, out, c),
         layout ? { engine: "office", ext: "pdf", label: "PDF, full layout" } : { engine: "office" }));
     }
+// Word-processing formats that only LibreOffice can open reach the Pandoc outputs (Markdown, EPUB, ...)
+// by converting to DOCX first. Needs both engines.
+const LO_ONLY_TEXT = ["doc", "dot", "docm", "dotx", "dotm", "ott", "fodt", "sxw", "stw"];
+const viaOfficeThenPandoc = to => async (f, c) => {
+  const mid = await viaOffice(f, "docx", c);
+  return viaPandoc(new File([mid], f.name.replace(/\.[^.]+$/, "") + ".docx"), to, c);
+};
+for (const inExt of LO_ONLY_TEXT)
+  for (const to of Object.keys(PD_OUT))
+    if (!["docx", "odt", "rtf", "txt"].includes(to)) ROUTES.push(R(null, [inExt], to, viaOfficeThenPandoc(to), { engine: "office+pandoc" }));
 // Pandoc: cats are resolved from the catalogue at start-up (cats: null).
 for (const inExt of Object.keys(PD_IN))
   for (const to of Object.keys(PD_OUT))
@@ -459,6 +488,10 @@ for (const inExt of Object.keys(PD_IN))
 // Drop any file: its type is detected, and only conversions that really exist are offered.
 // Unsupported or unrecognised files are denied with a reason.
 const ENGINES = { ffmpeg: ["video and audio engine", 30], magick: ["image engine", 15], pandoc: ["document engine", 60], office: ["Office engine", 250] };
+// a route's engine may be several joined with "+"; only the ones not downloaded yet count
+const unseenEngines = r => (r.engine ? r.engine.split("+") : []).filter(e => !seenEngines.has(e));
+const engineSize = parts => parts.reduce((n, e) => n + ENGINES[e][1], 0);
+const engineNames = parts => parts.map(e => ENGINES[e][0]).join(" and ");
 const POPULAR = ["pdf", "docx", "txt", "png", "jpg", "webp", "mp4", "mp3", "wav", "gif", "xlsx", "csv", "json", "md", "html", "epub", "odt", "doc", "xls", "ppt", "pptx"];
 const MAX_BYTES = 1.5 * 1024 * 1024 * 1024;
 const MIME_EXT = { "application/pdf": "pdf", "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif", "image/bmp": "bmp",
@@ -512,11 +545,14 @@ function targetsFor(ext) {
   all.sort((a, b) => rank(a) - rank(b) || a.to.localeCompare(b.to));
   return all;
 }
+// Tested against real sample files: the bundled LibreOffice build has no importer for these.
+const UNSUPPORTED_TESTED = new Set(["wpd", "wps", "pages", "abw", "zabw", "odm", "lwp", "uot", "uof"]);
 function denyReason(file, ext) {
   if (file.size === 0) return "This file is empty.";
   if (file.size > MAX_BYTES) return `Too large for in-browser conversion (${fmtSize(file.size)}; the limit is 1.5 GB).`;
   if (!ext) return "We couldn't work out what type of file this is. Try giving it a file extension.";
   const known = catalogue.find(c => c.extensions.includes(ext));
+  if (UNSUPPORTED_TESTED.has(ext)) return `.${ext} is recognised (${known.name.toLowerCase()}), but the bundled LibreOffice build can't open it, so there's no way to convert it in the browser yet.`;
   if (known) return `.${ext} is recognised (${known.name.toLowerCase()}), but there's no in-browser converter for it yet${known.engines ? `. It would need ${known.engines}` : ""}.`;
   return `We don't recognise .${ext} files, so there's nothing to convert them to.`;
 }
@@ -550,13 +586,13 @@ function render(c) {
     const chips = c.targets.length <= 10 ? c.targets : c.targets.slice(0, 8), rest = c.targets.slice(chips.length);
     body = el("div", { class: "body" }, el("p", { class: "lbl" }, "Convert to"),
       el("div", { class: "chips" },
-        chips.map(r => el("button", { class: "chip", type: "button", onclick: () => choose(c, r) }, r.label || r.to.toUpperCase(), r.engine && !seenEngines.has(r.engine) ? el("i", { title: `One-time ${ENGINES[r.engine][1]} MB download` }, "↓") : null)),
+        chips.map(r => el("button", { class: "chip", type: "button", onclick: () => choose(c, r) }, r.label || r.to.toUpperCase(), unseenEngines(r).length ? el("i", { title: `One-time ${engineSize(unseenEngines(r))} MB download` }, "↓") : null)),
         rest.length ? el("select", { class: "more", "aria-label": "More formats", onchange: e => { const r = rest.find(x => x.to === e.target.value); if (r) choose(c, r); } },
           el("option", { value: "" }, `${rest.length} more...`), rest.map(r => el("option", { value: r.to }, r.label || r.to.toUpperCase()))) : null));
   } else if (c.state === "confirm") {
-    const [name, mb] = ENGINES[c.pending.engine];
+    const parts = unseenEngines(c.pending), name = engineNames(parts), mb = engineSize(parts);
     body = el("div", { class: "body" }, el("div", { class: "note" },
-      el("span", {}, `Converting to ${(c.pending.label || c.pending.to.toUpperCase())} needs the ${name}, a one-time ~${mb} MB download that's cached afterwards.`),
+      el("span", {}, `Converting to ${(c.pending.label || c.pending.to.toUpperCase())} needs the ${name}, a one-time download of about ${mb} MB that's cached afterwards.`),
       el("span", { class: "tools" },
         el("button", { class: "btn small", type: "button", onclick: () => { c.state = "ready"; render(c); } }, "Cancel"),
         el("button", { class: "btn small primary", type: "button", onclick: () => start(c, c.pending) }, "Download and convert"))));
@@ -579,7 +615,7 @@ function render(c) {
 }
 
 function choose(c, route) {
-  const needsDownload = route.engine && !seenEngines.has(route.engine);
+  const needsDownload = unseenEngines(route).length > 0;
   c.out = { ...c.out, to: route.to };
   if (needsDownload) { c.pending = route; c.state = "confirm"; render(c); } else start(c, route);
 }
@@ -596,7 +632,7 @@ async function run(c, route) {
     let out = await route.fn(c.file, { status });
     const ext = out.ext || route.ext || route.to;
     out = out.blob || out;
-    if (route.engine) markEngineSeen(route.engine);
+    (route.engine ? route.engine.split("+") : []).forEach(markEngineSeen);
     if (c.out.url) URL.revokeObjectURL(c.out.url);
     c.out = { to: route.to, blob: out, ext, url: URL.createObjectURL(out), filename: c.file.name.replace(/\.[^.]+$/, "") + "." + ext };
     c.state = "done";
