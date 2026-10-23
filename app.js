@@ -464,12 +464,7 @@ const MAX_BYTES = 1.5 * 1024 * 1024 * 1024;
 const MIME_EXT = { "application/pdf": "pdf", "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif", "image/bmp": "bmp",
   "image/svg+xml": "svg", "image/avif": "avif", "image/heic": "heic", "text/plain": "txt", "text/markdown": "md", "text/html": "html", "text/csv": "csv",
   "application/json": "json", "audio/mpeg": "mp3", "audio/wav": "wav", "audio/ogg": "ogg", "audio/flac": "flac", "video/mp4": "mp4", "video/webm": "webm" };
-const ICONS = {
-  x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>',
-  ok: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8 12.5 3 3 5-6"/></svg>',
-  bad: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5m0 3.2v.1"/></svg>',
-  dl: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11m0 0 4-4m-4 4-4-4M5 20h14"/></svg>',
-};
+const ICONS = { x: "×", ok: "", bad: "", dl: "" };
 const IMG_EXTS = new Set([...IMG_IN, ...MAGICK_IN, "svg", "heic", "heif"]);
 const kindOf = e => IMG_EXTS.has(e) ? "image" : VID_IN.includes(e) ? "video" : AUD_IN.includes(e) ? "audio" : SHEET_IN.includes(e) || ["yaml", "yml", "xml"].includes(e) ? "data" : "doc";
 const fmtSize = n => n < 1024 ? n + " B" : n < 1048576 ? (n / 1024).toFixed(0) + " KB" : n < 1073741824 ? (n / 1048576).toFixed(1) + " MB" : (n / 1073741824).toFixed(2) + " GB";
@@ -569,7 +564,7 @@ function render(c) {
     const pct = (c.status || "").match(/(\d+)%/);
     body = el("div", { class: "body" }, el("div", { class: "state" }, el("div", { class: "msg" }, c.state === "queued" ? "Waiting for the earlier files..." : c.status || "Converting..."),
       el("span", { class: "sub" }, "to " + c.out.to.toUpperCase())),
-      el("div", { class: "bar", role: "progressbar" }, el("b", pct ? { class: "det", style: `width:${pct[1]}%` } : {})));
+      el("progress", pct ? { max: 100, value: pct[1] } : {}));
   } else if (c.state === "done") {
     body = el("div", { class: "body" }, el("div", { class: "state" },
       el("div", { class: "msg ok" }, el("span", { html: ICONS.ok }), el("span", {}, `Done, ${fmtSize(c.out.blob.size)} .${c.out.ext}`)),
@@ -651,14 +646,6 @@ addEventListener("dragover", e => { if (hasFiles(e)) e.preventDefault(); });
 addEventListener("drop", e => { if (!hasFiles(e)) return; e.preventDefault(); depth = 0; overlay.hidden = true; addAll(e.dataTransfer.files); });
 addEventListener("paste", e => { if (e.clipboardData && e.clipboardData.files.length) addAll(e.clipboardData.files); });
 
-// ----- theme -----
-$("theme").addEventListener("click", () => {
-  const cur = document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-  const next = cur === "dark" ? "light" : "dark";
-  document.documentElement.dataset.theme = next;
-  try { localStorage.setItem("theme", next); } catch {}
-});
-
 // ----- supported-formats reference -----
 async function init() {
   catalogue = await (await fetch("catalogue.json")).json();
@@ -673,13 +660,13 @@ async function init() {
     const outs = [...new Map(routes.map(r => [r.to, r.label || r.to.toUpperCase()])).values()];
     const canRead = new Set(routes.flatMap(r => r.from));
     return el("details", { class: "cat" },
-      el("summary", {}, c.name, el("span", { class: "pill" + (routes.length ? " on" : "") }, routes.length ? "Converts" : "Not yet")),
+      el("summary", {}, c.name, el("span", { class: "tag" + (routes.length ? " on" : "") }, routes.length ? "Converts" : "Not yet")),
       el("div", { class: "cat-body" },
-        routes.length ? el("p", {}, "Can convert to: " + outs.join(", ") + ". Bright extensions can be converted; dimmed ones are recognised but not supported yet.")
+        routes.length ? el("p", {}, "Can convert to: " + outs.join(", ") + ". Normal extensions can be converted; dimmed ones are recognised but not supported yet.")
           : el("p", {}, `Not available in the browser yet. It would need ${c.engines || "specialised tools"}.${c.notes ? " " + c.notes : ""}`),
         el("div", { class: "exts" }, c.extensions.map(e => el("code", { class: canRead.has(e) ? "yes" : "no" }, "." + e)))));
   });
-  $("count").textContent = `${live} of ${catalogue.length} format families can be converted in your browser today. The rest are listed so you can see what's coming.`;
+  $("count").textContent = `${live} of ${catalogue.length} format families can be converted in your browser today. Others are listed with what they would need.`;
   $("grid").replaceChildren(...items);
 }
 init();
