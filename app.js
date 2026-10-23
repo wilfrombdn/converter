@@ -241,6 +241,73 @@ function sheetOut(to) {
   };
 }
 
+// ---------- ImageMagick (wasm) ----------
+const MAGICK = "https://cdn.jsdelivr.net/npm/@imagemagick/magick-wasm@0.0.45/dist/";
+let magickP = null;
+function magick(status) {
+  return magickP ||= (async () => {
+    status("Downloading image engine (~15 MB)...");
+    const M = await import(MAGICK + "index.js");
+    const wasm = await (await fetch(MAGICK + "x86/magick.wasm")).arrayBuffer();
+    await M.initializeImageMagick(new Uint8Array(wasm));
+    return M;
+  })().catch(e => { magickP = null; throw e; });
+}
+const MAGICK_NAMES = { jpg: "JPG", tif: "TIFF", tiff: "TIFF", targa: "TGA", dib: "DIB" };
+const magickName = e => MAGICK_NAMES[e] || e.toUpperCase();
+async function viaMagick(file, to, ctx) {
+  const M = await magick(ctx.status);
+  ctx.status("Converting...");
+  const data = new Uint8Array(await file.arrayBuffer());
+  const write = img => {
+    if (to === "ico" && (img.width > 256 || img.height > 256)) img.resize(new M.MagickGeometry(256, 256));
+    return img.write(magickName(to), d => d.slice());
+  };
+  const from = magickName(extOf(file.name));
+  let out;
+  try { out = M.ImageMagick.read(data, from, write); }
+  catch { out = M.ImageMagick.read(data, write); }
+  return new Blob([out], { type: "application/octet-stream" });
+}
+
+// ---------- Pandoc (wasm) ----------
+// pandoc.wasm is >50 MB, which jsDelivr refuses to serve, so it comes from unpkg.
+let pandocP = null;
+function pandoc(status) {
+  return pandocP ||= (async () => {
+    status("Downloading document engine (~60 MB)...");
+    const src = await (await fetch("https://cdn.jsdelivr.net/npm/pandoc-wasm@1.1.0/src/core.js")).text();
+    const fixed = src.replace('"@bjorn3/browser_wasi_shim"', '"https://cdn.jsdelivr.net/npm/@bjorn3/browser_wasi_shim@0.4.2/+esm"');
+    const mod = await import(URL.createObjectURL(new Blob([fixed], { type: "text/javascript" })));
+    const wasm = await (await fetch("https://unpkg.com/pandoc-wasm@1.1.0/src/pandoc.wasm")).arrayBuffer();
+    return mod.createPandocInstance(wasm);
+  })().catch(e => { pandocP = null; throw e; });
+}
+const PD_IN = { docx: "docx", odt: "odt", rtf: "rtf", epub: "epub", fb2: "fb2", pptx: "pptx", md: "markdown", rst: "rst",
+  adoc: "asciidoc", asciidoc: "asciidoc", tex: "latex", latex: "latex", ltx: "latex", html: "html", ipynb: "ipynb",
+  org: "org", textile: "textile", typ: "typst", opml: "opml" };
+const PD_OUT = { docx: "docx", odt: "odt", epub: "epub3", html: "html5", md: "markdown", rst: "rst", tex: "latex", txt: "plain",
+  rtf: "rtf", pptx: "pptx", adoc: "asciidoc", org: "org", typ: "typst", fb2: "fb2", ipynb: "ipynb", textile: "textile", wiki: "mediawiki" };
+const PD_BINARY = new Set(["docx", "odt", "epub", "pptx", "rtf", "fb2", "ipynb"]);
+async function viaPandoc(file, to, ctx) {
+  const p = await pandoc(ctx.status);
+  ctx.status("Converting...");
+  const from = PD_IN[extOf(file.name)], inName = "input." + extOf(file.name), outName = "output." + to;
+  const opts = { from, to: PD_OUT[to], standalone: true, "output-file": outName, "input-files": [inName] };
+  if (!PD_BINARY.has(to)) opts["extract-media"] = "media";
+  const r = await p.convert(opts, null, { [inName]: file });
+  let out = r.files[outName];
+  if (out == null) throw new Error((r.stderr || "").trim().split("\n")[0] || "pandoc could not convert this file");
+  if (typeof out === "string") out = new Blob([out], { type: "text/plain" });
+  const media = Object.entries(r.mediaFiles || {});
+  if (!media.length) return out;
+  await lib("jszip");
+  const z = new JSZip();
+  z.file(file.name.replace(/\.[^.]+$/, "") + "." + to, out);
+  media.forEach(([path, data]) => z.file(path, data));
+  return { blob: await z.generateAsync({ type: "blob" }), ext: "zip" };
+}
+
 // ---------- subtitles ----------
 const pad2 = n => String(n).padStart(2, "0");
 function srtToVtt(text) {
@@ -310,6 +377,18 @@ const ROUTES = [
   R([12], ["srt", "vtt"], "txt", async f => textBlob(srtToTxt(await textOf(f)))),
 ];
 
+// Engine-backed routes come last so the faster built-in converters above win where both exist.
+// ImageMagick: only formats that passed a write-then-read round trip in the browser build.
+const MAGICK_IN = ["png", "jpg", "gif", "bmp", "dib", "tif", "tiff", "webp", "avif", "jxl", "jp2", "j2k", "ico", "psd", "pcx", "tga", "dds", "qoi", "exr", "hdr",
+  "ppm", "pgm", "pbm", "pnm", "pam", "sgi", "ras", "xbm", "xpm", "pfm", "jng", "mng", "wbmp", "fits", "dpx", "cin"];
+const MAGICK_OUT = ["png", "jpg", "gif", "bmp", "tiff", "ico", "tga", "avif", "jxl", "webp", "psd", "pcx", "ppm", "dds", "qoi", "exr", "hdr", "sgi", "ras", "jp2", "dpx"];
+for (const to of MAGICK_OUT)
+  ROUTES.push(R([6], MAGICK_IN.filter(e => e !== to && !(to === "tiff" && e === "tif")), to, (f, c) => viaMagick(f, to, c)));
+// Pandoc: cats are resolved from the catalogue at start-up (cats: null).
+for (const inExt of Object.keys(PD_IN))
+  for (const to of Object.keys(PD_OUT))
+    if (inExt !== to && PD_IN[inExt] !== PD_OUT[to]) ROUTES.push(R(null, [inExt], to, (f, c) => viaPandoc(f, to, c)));
+
 // ---------- UI ----------
 const tabs = $("tabs"), target = $("target"), list = $("list"), drop = $("drop"), input = $("file");
 let cats = [], cat = null;
@@ -337,7 +416,12 @@ function selectCat(c) {
 }
 
 async function init() {
-  cats = (await (await fetch("catalogue.json")).json()).map(c => {
+  const catalogue = await (await fetch("catalogue.json")).json();
+  ROUTES.filter(r => !r.cats).forEach(r => {
+    const hit = catalogue.filter(c => c.extensions.includes(r.from[0])).map(c => c.id);
+    r.cats = hit.length ? hit : [20];
+  });
+  cats = catalogue.map(c => {
     const routes = ROUTES.filter(r => r.cats.includes(c.id));
     return { ...c, routes, live: routes.length > 0, from: [...new Set(routes.flatMap(r => r.from))] };
   });
