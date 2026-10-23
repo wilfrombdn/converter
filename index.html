@@ -9,13 +9,15 @@
 if (window.crossOriginIsolated) {
   try { sessionStorage.removeItem("coi"); } catch {}
 } else if ("serviceWorker" in navigator && window.isSecureContext) {
-  navigator.serviceWorker.register("coi-sw.js").then(() => {
+  navigator.serviceWorker.register("coi-sw.js").then(reg => {
     let tried = false;
     try { tried = sessionStorage.getItem("coi") === "1"; } catch {}
     if (tried) return; // already reloaded once without becoming isolated; don't loop
     const go = () => { try { sessionStorage.setItem("coi", "1"); } catch {} location.reload(); };
-    if (navigator.serviceWorker.controller) go();
-    else navigator.serviceWorker.addEventListener("controllerchange", go);
+    const sw = reg.active || reg.waiting || reg.installing;
+    // a reload is enough once the worker is active: new navigations in scope go through it
+    if (!sw || sw.state === "activated") go();
+    else sw.addEventListener("statechange", () => { if (sw.state === "activated") go(); });
   }).catch(() => {});
 }
 </script>
