@@ -14,6 +14,10 @@
   p.sub{margin:0 0 20px;color:var(--muted)}
   nav{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}
   nav button{background:var(--card);color:var(--fg);border:1px solid var(--bd)}
+  nav button{padding:4px 10px;font-size:14px}
+  nav button.soon{opacity:.55}
+  #info{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:8px 20px}
+  [hidden]{display:none!important}
   nav button[aria-selected=true]{background:var(--accent);color:#fff;border-color:var(--accent)}
   .opts{display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap}
   select{font:inherit;padding:6px 10px;border-radius:8px;border:1px solid var(--bd);background:var(--card);color:var(--fg)}
@@ -33,12 +37,14 @@
 <main>
   <h1>Converter</h1>
   <p class="sub">Convert files between formats. Everything runs in your browser; files never leave your device.</p>
+  <small id="count" style="margin-bottom:12px"></small>
   <nav id="tabs" role="tablist"></nav>
-  <div class="opts"><label for="target">Convert to</label><select id="target"></select></div>
+  <div id="work"><div class="opts"><label for="target">Convert to</label><select id="target"></select></div>
   <div id="drop"><p>Drop files here or <button type="button" id="pick">choose files</button></p>
     <input id="file" type="file" multiple hidden></div>
   <small id="hint"></small>
-  <ul id="list"></ul>
+  <ul id="list"></ul></div>
+  <div id="info" hidden></div>
   <small>Video and audio use a ~30 MB converter engine that downloads the first time you use them, and large videos can be slow. PDF to Word works on text-based PDFs and rebuilds paragraphs and headings; tables and images are not preserved.</small>
 </main>
 <script src="app.js"></script>

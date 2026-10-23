@@ -10,6 +10,7 @@ const LIBS = {
   jszip: "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js",
   xlsx: "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js",
   heic: "https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js",
+  yaml: "https://cdnjs.cloudflare.com/ajax/libs/js-yaml/4.1.0/js-yaml.min.js",
   marked: "https://cdnjs.cloudflare.com/ajax/libs/marked/4.3.0/marked.min.js",
   ffmpeg: "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js",
 };
@@ -41,6 +42,7 @@ async function loadImage(file) {
     const out = await heic2any({ blob: file, toType: "image/png" });
     blob = Array.isArray(out) ? out[0] : out;
   }
+  if (e === "svg") blob = new Blob([file], { type: "image/svg+xml" });
   const url = URL.createObjectURL(blob);
   try {
     const img = new Image();
@@ -230,6 +232,7 @@ function sheetOut(to) {
   return async file => {
     const wb = await readSheet(file);
     const ws = wb.Sheets[wb.SheetNames[0]];
+    if (to === "tsv") return new Blob([XLSX.utils.sheet_to_csv(ws, { FS: "	" })], { type: "text/tab-separated-values" });
     if (to === "csv") return new Blob([XLSX.utils.sheet_to_csv(ws)], { type: "text/csv" });
     if (to === "json") return new Blob([JSON.stringify(XLSX.utils.sheet_to_json(ws), null, 2)], { type: "application/json" });
     if (to === "html") return htmlPage(XLSX.utils.sheet_to_html(ws, { header: "", footer: "" }), "Sheet");
@@ -238,11 +241,38 @@ function sheetOut(to) {
   };
 }
 
+// ---------- subtitles ----------
+const pad2 = n => String(n).padStart(2, "0");
+function srtToVtt(text) {
+  return "WEBVTT\n\n" + text.replace(/^﻿/, "").replace(/(\d+:\d+:\d+),(\d+)/g, "$1.$2");
+}
+function vttToSrt(text) {
+  const out = [];
+  for (const block of text.replace(/^﻿/, "").split(/\n{2,}/)) {
+    const lines = block.split("\n");
+    const i = lines.findIndex(l => l.includes("-->"));
+    if (i < 0) continue;
+    const time = lines[i].replace(/(^|\s)(\d+:\d+\.\d+)/g, "$100:$2").replace(/(\d+):(\d+):(\d+)\.(\d+)/g, (m, h, mi, s, ms) => `${pad2(h)}:${mi}:${s},${ms}`)
+      .replace(/(\d{2}:\d{2}:\d{2},\d+)\s+(?:align|position|line|size)[^\n]*$/, "$1");
+    out.push(`${out.length + 1}\n${time}\n${lines.slice(i + 1).join("\n")}`);
+  }
+  return out.join("\n\n") + "\n";
+}
+const srtToTxt = text => text.replace(/^﻿/, "").split(/\n{2,}/).map(b => b.split("\n").filter(l => !/^\d+$/.test(l.trim()) && !l.includes("-->")).join("\n")).filter(Boolean).join("\n");
+
+// ---------- html / yaml ----------
+async function htmlText(file) {
+  const doc = new DOMParser().parseFromString(await file.text(), "text/html");
+  doc.querySelectorAll("script,style").forEach(n => n.remove());
+  return (doc.body.innerText || doc.body.textContent).replace(/\n{3,}/g, "\n\n").trim();
+}
+
 // ---------- routes ----------
-const IMG_IN = ["png", "jpg", "webp", "gif", "bmp", "svg", "avif", "heic", "heif"];
-const AUD_IN = ["mp3", "wav", "ogg", "m4a", "aac", "flac", "opus", "wma", "weba"];
+// Each route lists the catalogue category ids (cats) it appears under.
+const IMG_IN = ["png", "jpg", "webp", "gif", "bmp", "avif", "heic", "heif"];
+const AUD_IN = ["mp3", "wav", "ogg", "m4a", "aac", "flac", "opus", "wma"];
 const VID_IN = ["mp4", "mov", "webm", "mkv", "avi", "flv", "wmv", "m4v", "3gp"];
-const SHEET_IN = ["xlsx", "xls", "csv", "ods", "json"];
+const SHEET_IN = ["xlsx", "xls", "csv", "tsv", "ods", "json"];
 
 const img = (type, q) => async f => canvasBlob(await imageToCanvas(f, type === "image/jpeg"), type, q);
 const imgToPdf = async f => {
@@ -252,48 +282,79 @@ const imgToPdf = async f => {
   d.addImage(c.toDataURL("image/jpeg", 0.92), "JPEG", 0, 0, c.width, c.height);
   return d.output("blob");
 };
+const R = (cats, from, to, fn) => ({ cats, from, to, fn });
+const textBlob = (s, type = "text/plain") => new Blob([s], { type });
+const IMG_OUT = { png: img("image/png"), jpg: img("image/jpeg", 0.92), webp: img("image/webp", 0.92), pdf: imgToPdf };
 
-const CATS = [
-  { id: "photos", name: "Photos", from: IMG_IN, routes: [
-    { to: "png", fn: img("image/png") }, { to: "jpg", fn: img("image/jpeg", 0.92) },
-    { to: "webp", fn: img("image/webp", 0.92) }, { to: "pdf", fn: imgToPdf } ] },
-  { id: "video", name: "Videos", from: VID_IN, routes: ["mp4", "webm", "mkv", "gif", "mp3", "wav"].map(to => ({ to, fn: (f, c) => viaFF(f, to, c) })) },
-  { id: "audio", name: "Audio", from: AUD_IN, routes: ["mp3", "wav", "ogg", "flac", "m4a"].map(to => ({ to, fn: (f, c) => viaFF(f, to, c) })) },
-  { id: "docs", name: "Documents", from: ["pdf", "docx", "txt", "md"], routes: [
-    { from: ["pdf"], to: "docx", fn: pdfToDocx },
-    { from: ["pdf"], to: "txt", fn: pdfToTxt },
-    { from: ["pdf"], to: "png", fn: pdfToPng },
-    { from: ["docx"], to: "pdf", fn: async f => textToPdf(await docxText(f)) },
-    { from: ["docx"], to: "txt", fn: async f => new Blob([await docxText(f)], { type: "text/plain" }) },
-    { from: ["docx"], to: "html", fn: async f => { await lib("mammoth"); return htmlPage((await mammoth.convertToHtml({ arrayBuffer: await f.arrayBuffer() })).value, f.name); } },
-    { from: ["txt", "md"], to: "pdf", fn: async f => textToPdf(await textOf(f)) },
-    { from: ["txt", "md"], to: "docx", fn: async f => textToDocx(await textOf(f)) },
-    { from: ["txt"], to: "html", fn: async f => htmlPage("<pre>" + escHtml(await textOf(f)) + "</pre>", f.name) },
-    { from: ["md"], to: "html", fn: async f => { await lib("marked"); return htmlPage(marked.parse(await textOf(f)), f.name); } },
-  ] },
-  { id: "data", name: "Spreadsheets & Data", from: SHEET_IN, routes: ["xlsx", "csv", "json", "ods", "html"].map(to => ({ to, fn: sheetOut(to) })) },
+const ROUTES = [
+  ...Object.entries(IMG_OUT).flatMap(([to, fn]) => [R([6], IMG_IN, to, fn), R([8], ["svg"], to, fn)]),
+  ...["mp4", "webm", "mkv", "gif", "mp3", "wav"].map(to => R([11], VID_IN, to, (f, c) => viaFF(f, to, c))),
+  ...["mp3", "wav", "ogg", "flac", "m4a"].map(to => R([9], AUD_IN, to, (f, c) => viaFF(f, to, c))),
+  R([1, 2], ["pdf"], "docx", pdfToDocx),
+  R([1, 2], ["pdf"], "txt", pdfToTxt),
+  R([1, 2], ["pdf"], "png", pdfToPng),
+  R([1, 2], ["docx"], "pdf", async f => textToPdf(await docxText(f))),
+  R([1, 2], ["docx"], "txt", async f => textBlob(await docxText(f))),
+  R([1, 2], ["docx"], "html", async f => { await lib("mammoth"); return htmlPage((await mammoth.convertToHtml({ arrayBuffer: await f.arrayBuffer() })).value, f.name); }),
+  R([1], ["txt", "md"], "pdf", async f => textToPdf(await textOf(f))),
+  R([1], ["txt", "md"], "docx", async f => textToDocx(await textOf(f))),
+  R([1, 20], ["txt"], "html", async f => htmlPage("<pre>" + escHtml(await textOf(f)) + "</pre>", f.name)),
+  R([1, 20], ["md"], "html", async f => { await lib("marked"); return htmlPage(marked.parse(await textOf(f)), f.name); }),
+  R([20], ["html"], "txt", async f => textBlob(await htmlText(f))),
+  R([20], ["html"], "pdf", async f => textToPdf(await htmlText(f))),
+  ...["xlsx", "csv", "tsv", "json", "ods", "html"].map(to => R([3, 18], SHEET_IN, to, sheetOut(to))),
+  R([18], ["json"], "yaml", async f => { await lib("yaml"); return textBlob(jsyaml.dump(JSON.parse(await f.text()))); }),
+  R([18], ["yaml", "yml"], "json", async f => { await lib("yaml"); return textBlob(JSON.stringify(jsyaml.load(await f.text()), null, 2), "application/json"); }),
+  R([12], ["srt"], "vtt", async f => textBlob(srtToVtt(await textOf(f)), "text/vtt")),
+  R([12], ["vtt"], "srt", async f => textBlob(vttToSrt(await textOf(f)))),
+  R([12], ["srt", "vtt"], "txt", async f => textBlob(srtToTxt(await textOf(f)))),
 ];
 
 // ---------- UI ----------
-let cat = CATS[0];
 const tabs = $("tabs"), target = $("target"), list = $("list"), drop = $("drop"), input = $("file");
+let cats = [], cat = null;
 
 function selectCat(c) {
   cat = c;
-  [...tabs.children].forEach(b => b.setAttribute("aria-selected", b.dataset.id === c.id));
-  const outs = [...new Set(c.routes.map(r => r.to))];
-  target.innerHTML = outs.map(o => `<option value="${o}">${o.toUpperCase()}</option>`).join("");
-  input.accept = c.from.map(e => "." + e).join(",");
-  $("hint").textContent = "Accepts: " + c.from.map(e => e.toUpperCase()).join(", ");
+  [...tabs.children].forEach(b => b.setAttribute("aria-selected", b.dataset.id == c.id));
+  $("work").hidden = !c.live;
+  $("info").hidden = c.live;
+  if (c.live) {
+    const outs = [...new Set(c.routes.map(r => r.to))];
+    target.innerHTML = outs.map(o => `<option value="${o}">${o.toUpperCase()}</option>`).join("");
+    input.accept = c.from.map(e => "." + e).join(",");
+    $("hint").textContent = "Accepts: " + c.from.map(e => e.toUpperCase()).join(", ");
+  } else {
+    $("info").innerHTML = "";
+    const h = document.createElement("h2"); h.textContent = c.name;
+    const p = document.createElement("p");
+    p.textContent = `Not available in the browser yet. Converting these needs ${c.engines || "specialised tools"}, which isn't wired into this page. ` + (c.notes || "");
+    const q = document.createElement("p"); q.textContent = "Recognised extensions: " + c.extensions.map(e => "." + e).join(" ");
+    q.style.color = "var(--muted)";
+    $("info").append(h, p, q);
+  }
   try { sessionStorage.setItem("cat", c.id); } catch {}
 }
-CATS.forEach(c => {
-  const b = document.createElement("button");
-  b.textContent = c.name; b.dataset.id = c.id; b.setAttribute("role", "tab");
-  b.onclick = () => selectCat(c);
-  tabs.appendChild(b);
-});
-try { selectCat(CATS.find(c => c.id === sessionStorage.getItem("cat")) || CATS[0]); } catch { selectCat(CATS[0]); }
+
+async function init() {
+  cats = (await (await fetch("catalogue.json")).json()).map(c => {
+    const routes = ROUTES.filter(r => r.cats.includes(c.id));
+    return { ...c, routes, live: routes.length > 0, from: [...new Set(routes.flatMap(r => r.from))] };
+  });
+  cats.forEach(c => {
+    const b = document.createElement("button");
+    b.textContent = c.name.replace(/ &.*|,.*/, "");
+    b.title = c.name + (c.live ? "" : " (not available in the browser yet)");
+    b.dataset.id = c.id; b.setAttribute("role", "tab");
+    if (!c.live) b.classList.add("soon");
+    b.onclick = () => selectCat(c);
+    tabs.appendChild(b);
+  });
+  $("count").textContent = `${cats.filter(c => c.live).length} of ${cats.length} categories convert in your browser today; the rest are listed with what they would need.`;
+  let start = cats.find(c => c.id === 1);
+  try { start = cats.find(c => c.id == sessionStorage.getItem("cat")) || start; } catch {}
+  selectCat(start);
+}
 
 $("pick").onclick = e => { e.stopPropagation(); input.click(); };
 drop.onclick = () => input.click();
@@ -316,10 +377,15 @@ function handle(files) {
 }
 async function run(f, c, to, st) {
   const from = extOf(f.name);
-  const route = c.routes.find(r => r.to === to && (!r.from || r.from.includes(from)));
-  if (!c.from.includes(from) || !route || from === to) {
-    const ok = [...new Set(c.routes.filter(r => !r.from || r.from.includes(from)).map(r => r.to))].filter(x => x !== from);
-    st.textContent = !c.from.includes(from) ? `.${from} isn't a ${c.name} format` : `Can't convert .${from} to .${to}` + (ok.length ? `. Try: ${ok.join(", ")}` : "");
+  const route = c.routes.find(r => r.to === to && r.from.includes(from));
+  if (!route) {
+    const ok = [...new Set(c.routes.filter(r => r.from.includes(from)).map(r => r.to))].filter(x => x !== from);
+    const other = cats.find(o => o.live && o.routes.some(r => r.from.includes(from)));
+    const known = cats.find(o => o.extensions.includes(from));
+    st.textContent = ok.length ? `Can't convert .${from} to .${to}. Try: ${ok.join(", ")}`
+      : other ? `.${from} belongs under "${other.name.replace(/ &.*|,.*/, "")}"`
+      : known ? `.${from} is recognised (${known.name}) but has no in-browser converter yet`
+      : `.${from} isn't in the catalogue`;
     return;
   }
   const status = t => { st.textContent = t; };
@@ -337,3 +403,4 @@ async function run(f, c, to, st) {
     st.textContent = "Failed: " + (err.message || err);
   }
 }
+init();
