@@ -405,8 +405,8 @@ const IMG_OUT = { png: img("image/png"), jpg: img("image/jpeg", 0.92), webp: img
 
 const ROUTES = [
   ...Object.entries(IMG_OUT).flatMap(([to, fn]) => [R([6], IMG_IN, to, fn), R([8], ["svg"], to, fn)]),
-  ...["mp4", "webm", "mkv", "gif", "mp3", "wav"].map(to => R([11], VID_IN, to, (f, c) => viaFF(f, to, c))),
-  ...["mp3", "wav", "ogg", "flac", "m4a"].map(to => R([9], AUD_IN, to, (f, c) => viaFF(f, to, c))),
+  ...["mp4", "webm", "mkv", "gif", "mp3", "wav"].map(to => R([11], VID_IN, to, (f, c) => viaFF(f, to, c), { engine: "ffmpeg" })),
+  ...["mp3", "wav", "ogg", "flac", "m4a"].map(to => R([9], AUD_IN, to, (f, c) => viaFF(f, to, c), { engine: "ffmpeg" })),
   R([1, 2], ["pdf"], "docx", pdfToDocx),
   R([1, 2], ["pdf"], "txt", pdfToTxt),
   R([1, 2], ["pdf"], "png", pdfToPng),
@@ -433,7 +433,7 @@ const MAGICK_IN = ["png", "jpg", "gif", "bmp", "dib", "tif", "tiff", "webp", "av
   "ppm", "pgm", "pbm", "pnm", "pam", "sgi", "ras", "xbm", "xpm", "pfm", "jng", "mng", "wbmp", "fits", "dpx", "cin"];
 const MAGICK_OUT = ["png", "jpg", "gif", "bmp", "tiff", "ico", "tga", "avif", "jxl", "webp", "psd", "pcx", "ppm", "dds", "qoi", "exr", "hdr", "sgi", "ras", "jp2", "dpx"];
 for (const to of MAGICK_OUT)
-  ROUTES.push(R([6], MAGICK_IN.filter(e => e !== to && !(to === "tiff" && e === "tif")), to, (f, c) => viaMagick(f, to, c)));
+  ROUTES.push(R([6], MAGICK_IN.filter(e => e !== to && !(to === "tiff" && e === "tif")), to, (f, c) => viaMagick(f, to, c), { engine: "magick" }));
 // LibreOffice: legacy Office formats (.doc/.xls/.ppt and their template/show variants, which share the
 // same binary format) plus PDF and legacy-format output for the modern ones. Like pandoc, cats come from
 // the catalogue. docx to PDF already exists as a quick text-only route, so the full-layout one is separate.
@@ -448,109 +448,238 @@ for (const { from, to } of LO_FAMILIES)
       if (inExt === out) continue;
       const layout = inExt === "docx" && out === "pdf";
       ROUTES.push(R(null, [inExt], layout ? "pdf-layout" : out, (f, c) => viaOffice(f, out, c),
-        layout ? { ext: "pdf", label: "PDF (full layout, large download)" } : undefined));
+        layout ? { engine: "office", ext: "pdf", label: "PDF, full layout" } : { engine: "office" }));
     }
 // Pandoc: cats are resolved from the catalogue at start-up (cats: null).
 for (const inExt of Object.keys(PD_IN))
   for (const to of Object.keys(PD_OUT))
-    if (inExt !== to && PD_IN[inExt] !== PD_OUT[to]) ROUTES.push(R(null, [inExt], to, (f, c) => viaPandoc(f, to, c)));
+    if (inExt !== to && PD_IN[inExt] !== PD_OUT[to]) ROUTES.push(R(null, [inExt], to, (f, c) => viaPandoc(f, to, c), { engine: "pandoc" }));
 
 // ---------- UI ----------
-const tabs = $("tabs"), target = $("target"), list = $("list"), drop = $("drop"), input = $("file");
-let cats = [], cat = null;
+// Drop any file: its type is detected, and only conversions that really exist are offered.
+// Unsupported or unrecognised files are denied with a reason.
+const ENGINES = { ffmpeg: ["video and audio engine", 30], magick: ["image engine", 15], pandoc: ["document engine", 60], office: ["Office engine", 250] };
+const POPULAR = ["pdf", "docx", "txt", "png", "jpg", "webp", "mp4", "mp3", "wav", "gif", "xlsx", "csv", "json", "md", "html", "epub", "odt", "doc", "xls", "ppt", "pptx"];
+const MAX_BYTES = 1.5 * 1024 * 1024 * 1024;
+const MIME_EXT = { "application/pdf": "pdf", "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif", "image/bmp": "bmp",
+  "image/svg+xml": "svg", "image/avif": "avif", "image/heic": "heic", "text/plain": "txt", "text/markdown": "md", "text/html": "html", "text/csv": "csv",
+  "application/json": "json", "audio/mpeg": "mp3", "audio/wav": "wav", "audio/ogg": "ogg", "audio/flac": "flac", "video/mp4": "mp4", "video/webm": "webm" };
+const ICONS = {
+  x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>',
+  ok: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8 12.5 3 3 5-6"/></svg>',
+  bad: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5m0 3.2v.1"/></svg>',
+  dl: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11m0 0 4-4m-4 4-4-4M5 20h14"/></svg>',
+};
+const IMG_EXTS = new Set([...IMG_IN, ...MAGICK_IN, "svg", "heic", "heif"]);
+const kindOf = e => IMG_EXTS.has(e) ? "image" : VID_IN.includes(e) ? "video" : AUD_IN.includes(e) ? "audio" : SHEET_IN.includes(e) || ["yaml", "yml", "xml"].includes(e) ? "data" : "doc";
+const fmtSize = n => n < 1024 ? n + " B" : n < 1048576 ? (n / 1024).toFixed(0) + " KB" : n < 1073741824 ? (n / 1048576).toFixed(1) + " MB" : (n / 1073741824).toFixed(2) + " GB";
 
-function selectCat(c) {
-  cat = c;
-  [...tabs.children].forEach(b => b.setAttribute("aria-selected", b.dataset.id == c.id));
-  $("work").hidden = !c.live;
-  $("info").hidden = c.live;
-  if (c.live) {
-    const outs = new Map(c.routes.map(r => [r.to, r.label || r.to.toUpperCase()]));
-    target.innerHTML = [...outs].map(([o, label]) => `<option value="${o}">${label}</option>`).join("");
-    input.accept = c.from.map(e => "." + e).join(",");
-    $("hint").textContent = "Accepts: " + c.from.map(e => e.toUpperCase()).join(", ");
-  } else {
-    $("info").innerHTML = "";
-    const h = document.createElement("h2"); h.textContent = c.name;
-    const p = document.createElement("p");
-    p.textContent = `Not available in the browser yet. Converting these needs ${c.engines || "specialised tools"}, which isn't wired into this page. ` + (c.notes || "");
-    const q = document.createElement("p"); q.textContent = "Recognised extensions: " + c.extensions.map(e => "." + e).join(" ");
-    q.style.color = "var(--muted)";
-    $("info").append(h, p, q);
+// small DOM helper: el("div", {class: "x", onclick: fn}, child, ...)
+function el(tag, attrs, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else if (k === "html") n.innerHTML = v;
+    else if (v !== false && v != null) n.setAttribute(k, v === true ? "" : v);
   }
-  try { sessionStorage.setItem("cat", c.id); } catch {}
+  n.append(...kids.flat().filter(k => k != null && k !== false));
+  return n;
 }
 
+let catalogue = [];
+const filesEl = $("files"), drop = $("drop"), input = $("file"), overlay = $("overlay");
+const seenEngines = (() => { try { return new Set(JSON.parse(localStorage.getItem("engines") || "[]")); } catch { return new Set(); } })();
+const markEngineSeen = id => { seenEngines.add(id); try { localStorage.setItem("engines", JSON.stringify([...seenEngines])); } catch {} };
+
+// ----- type detection -----
+async function detectExt(file) {
+  const m = file.name.match(/\.([^./\\]+)$/);
+  if (m) return extOf(file.name);
+  if (MIME_EXT[file.type]) return MIME_EXT[file.type];
+  const b = new Uint8Array(await file.slice(0, 12).arrayBuffer());
+  const s = String.fromCharCode(...b);
+  if (s.startsWith("%PDF")) return "pdf";
+  if (b[0] === 0x89 && s.slice(1, 4) === "PNG") return "png";
+  if (b[0] === 0xff && b[1] === 0xd8) return "jpg";
+  if (s.startsWith("GIF8")) return "gif";
+  if (s.startsWith("RIFF") && s.slice(8, 12) === "WEBP") return "webp";
+  if (s.startsWith("RIFF") && s.slice(8, 12) === "WAVE") return "wav";
+  if (s.startsWith("OggS")) return "ogg";
+  if (s.startsWith("fLaC")) return "flac";
+  if (s.startsWith("ID3")) return "mp3";
+  return "";
+}
+function targetsFor(ext) {
+  const map = new Map();
+  for (const r of ROUTES) if (r.from.includes(ext) && r.to !== ext && !map.has(r.to)) map.set(r.to, r);
+  const all = [...map.values()];
+  const rank = r => { const i = POPULAR.indexOf(r.to); return i < 0 ? 999 : i; };
+  all.sort((a, b) => rank(a) - rank(b) || a.to.localeCompare(b.to));
+  return all;
+}
+function denyReason(file, ext) {
+  if (file.size === 0) return "This file is empty.";
+  if (file.size > MAX_BYTES) return `Too large for in-browser conversion (${fmtSize(file.size)}; the limit is 1.5 GB).`;
+  if (!ext) return "We couldn't work out what type of file this is. Try giving it a file extension.";
+  const known = catalogue.find(c => c.extensions.includes(ext));
+  if (known) return `.${ext} is recognised (${known.name.toLowerCase()}), but there's no in-browser converter for it yet${known.engines ? `. It would need ${known.engines}` : ""}.`;
+  return `We don't recognise .${ext} files, so there's nothing to convert them to.`;
+}
+
+// ----- cards -----
+const cards = [];
+let chain = Promise.resolve();
+
+async function addFile(file) {
+  const ext = await detectExt(file);
+  const targets = file.size && file.size <= MAX_BYTES && ext ? targetsFor(ext) : [];
+  const card = { file, ext, targets, state: targets.length ? "ready" : "denied", reason: targets.length ? "" : denyReason(file, ext), root: el("article", { class: "card" }) };
+  cards.unshift(card);
+  filesEl.prepend(card.root);
+  render(card);
+  renderTools();
+}
+
+function render(c) {
+  const { file, ext } = c;
+  const known = catalogue.find(x => x.extensions.includes(ext));
+  const sub = [fmtSize(file.size), ext ? "." + ext.toUpperCase() : "unknown type", c.state === "ready" && known ? known.name.split(/ &|,/)[0] : ""].filter(Boolean).join("  ·  ");
+  const head = el("div", { class: "head" },
+    el("div", { class: "badge k-" + (ext && c.state !== "denied" ? kindOf(ext) : "other") }, ext ? ext.slice(0, 4) : "?"),
+    el("div", { class: "meta" }, el("div", { class: "name", title: file.name }, file.name), el("div", { class: "sub" }, sub)),
+    el("button", { class: "x", type: "button", "aria-label": "Remove " + file.name, onclick: () => remove(c), html: ICONS.x }));
+  let body;
+  if (c.state === "denied") {
+    body = el("div", { class: "body" }, el("div", { class: "denied", role: "alert" }, el("span", { html: ICONS.bad }), el("div", {}, el("strong", {}, "Can't convert this file. "), c.reason)));
+  } else if (c.state === "ready") {
+    const chips = c.targets.length <= 10 ? c.targets : c.targets.slice(0, 8), rest = c.targets.slice(chips.length);
+    body = el("div", { class: "body" }, el("p", { class: "lbl" }, "Convert to"),
+      el("div", { class: "chips" },
+        chips.map(r => el("button", { class: "chip", type: "button", onclick: () => choose(c, r) }, r.label || r.to.toUpperCase(), r.engine && !seenEngines.has(r.engine) ? el("i", { title: `One-time ${ENGINES[r.engine][1]} MB download` }, "↓") : null)),
+        rest.length ? el("select", { class: "more", "aria-label": "More formats", onchange: e => { const r = rest.find(x => x.to === e.target.value); if (r) choose(c, r); } },
+          el("option", { value: "" }, `${rest.length} more...`), rest.map(r => el("option", { value: r.to }, r.label || r.to.toUpperCase()))) : null));
+  } else if (c.state === "confirm") {
+    const [name, mb] = ENGINES[c.pending.engine];
+    body = el("div", { class: "body" }, el("div", { class: "note" },
+      el("span", {}, `Converting to ${(c.pending.label || c.pending.to.toUpperCase())} needs the ${name}, a one-time ~${mb} MB download that's cached afterwards.`),
+      el("span", { class: "tools" },
+        el("button", { class: "btn small", type: "button", onclick: () => { c.state = "ready"; render(c); } }, "Cancel"),
+        el("button", { class: "btn small primary", type: "button", onclick: () => start(c, c.pending) }, "Download and convert"))));
+  } else if (c.state === "queued" || c.state === "working") {
+    const pct = (c.status || "").match(/(\d+)%/);
+    body = el("div", { class: "body" }, el("div", { class: "state" }, el("div", { class: "msg" }, c.state === "queued" ? "Waiting for the earlier files..." : c.status || "Converting..."),
+      el("span", { class: "sub" }, "to " + c.out.to.toUpperCase())),
+      el("div", { class: "bar", role: "progressbar" }, el("b", pct ? { class: "det", style: `width:${pct[1]}%` } : {})));
+  } else if (c.state === "done") {
+    body = el("div", { class: "body" }, el("div", { class: "state" },
+      el("div", { class: "msg ok" }, el("span", { html: ICONS.ok }), el("span", {}, `Done, ${fmtSize(c.out.blob.size)} .${c.out.ext}`)),
+      el("span", { class: "tools" },
+        el("button", { class: "btn small", type: "button", onclick: () => { c.state = "ready"; render(c); renderTools(); } }, "Convert to something else"),
+        el("a", { class: "btn small primary", href: c.out.url, download: c.out.filename }, el("span", { html: ICONS.dl }), "Download"))));
+  } else if (c.state === "error") {
+    body = el("div", { class: "body" }, el("div", { class: "denied", role: "alert" }, el("span", { html: ICONS.bad }), el("div", {}, el("strong", {}, "Conversion failed. "), c.error)),
+      el("div", { class: "tools", style: "margin-top:12px" }, el("button", { class: "btn small", type: "button", onclick: () => { c.state = "ready"; render(c); } }, "Try another format")));
+  }
+  c.root.replaceChildren(head, body);
+}
+
+function choose(c, route) {
+  const needsDownload = route.engine && !seenEngines.has(route.engine);
+  c.out = { ...c.out, to: route.to };
+  if (needsDownload) { c.pending = route; c.state = "confirm"; render(c); } else start(c, route);
+}
+function start(c, route) {
+  c.out = { ...c.out, to: route.to };
+  c.state = "queued"; render(c);
+  chain = chain.then(() => run(c, route));
+}
+async function run(c, route) {
+  if (!cards.includes(c)) return; // removed while waiting
+  c.state = "working"; c.status = "Converting..."; render(c);
+  const status = t => { c.status = t; if (cards.includes(c)) render(c); };
+  try {
+    let out = await route.fn(c.file, { status });
+    const ext = out.ext || route.ext || route.to;
+    out = out.blob || out;
+    if (route.engine) markEngineSeen(route.engine);
+    if (c.out.url) URL.revokeObjectURL(c.out.url);
+    c.out = { to: route.to, blob: out, ext, url: URL.createObjectURL(out), filename: c.file.name.replace(/\.[^.]+$/, "") + "." + ext };
+    c.state = "done";
+  } catch (err) {
+    c.state = "error"; c.error = String((err && err.message) || err);
+  }
+  if (cards.includes(c)) { render(c); renderTools(); }
+}
+function remove(c) {
+  const i = cards.indexOf(c);
+  if (i >= 0) cards.splice(i, 1);
+  if (c.out && c.out.url) URL.revokeObjectURL(c.out.url);
+  c.root.remove();
+  renderTools();
+}
+
+// "Download all" appears once two or more files are converted
+let toolsEl = null;
+function renderTools() {
+  const done = cards.filter(c => c.state === "done");
+  if (done.length < 2) { toolsEl && toolsEl.remove(); toolsEl = null; return; }
+  if (!toolsEl) toolsEl = el("div", { class: "tools" }, el("button", { class: "btn", type: "button", onclick: downloadAll }, el("span", { html: ICONS.dl }), "Download all (.zip)"));
+  filesEl.prepend(toolsEl);
+}
+async function downloadAll() {
+  await lib("jszip");
+  const z = new JSZip(), used = new Set();
+  for (const c of cards.filter(x => x.state === "done")) {
+    let n = c.out.filename, k = 1;
+    while (used.has(n)) n = c.out.filename.replace(/(\.[^.]+)$/, ` (${k++})$1`);
+    used.add(n); z.file(n, c.out.blob);
+  }
+  const a = el("a", { href: URL.createObjectURL(await z.generateAsync({ type: "blob" })), download: "converted-files.zip" });
+  document.body.append(a); a.click(); a.remove();
+}
+
+// ----- input: click, drop anywhere, paste -----
+const addAll = files => [...files].filter(f => f && f.name !== undefined).forEach(addFile);
+drop.addEventListener("click", () => input.click());
+drop.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); input.click(); } });
+input.addEventListener("change", () => { addAll(input.files); input.value = ""; });
+let depth = 0;
+const hasFiles = e => e.dataTransfer && [...e.dataTransfer.types].includes("Files");
+addEventListener("dragenter", e => { if (hasFiles(e)) { depth++; overlay.hidden = false; } });
+addEventListener("dragleave", e => { if (hasFiles(e) && --depth <= 0) { depth = 0; overlay.hidden = true; } });
+addEventListener("dragover", e => { if (hasFiles(e)) e.preventDefault(); });
+addEventListener("drop", e => { if (!hasFiles(e)) return; e.preventDefault(); depth = 0; overlay.hidden = true; addAll(e.dataTransfer.files); });
+addEventListener("paste", e => { if (e.clipboardData && e.clipboardData.files.length) addAll(e.clipboardData.files); });
+
+// ----- theme -----
+$("theme").addEventListener("click", () => {
+  const cur = document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  const next = cur === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem("theme", next); } catch {}
+});
+
+// ----- supported-formats reference -----
 async function init() {
-  const catalogue = await (await fetch("catalogue.json")).json();
+  catalogue = await (await fetch("catalogue.json")).json();
   ROUTES.filter(r => !r.cats).forEach(r => {
     const hit = catalogue.filter(c => c.extensions.includes(r.from[0])).map(c => c.id);
     r.cats = hit.length ? hit : [20];
   });
-  cats = catalogue.map(c => {
+  let live = 0;
+  const items = catalogue.map(c => {
     const routes = ROUTES.filter(r => r.cats.includes(c.id));
-    return { ...c, routes, live: routes.length > 0, from: [...new Set(routes.flatMap(r => r.from))] };
+    if (routes.length) live++;
+    const outs = [...new Map(routes.map(r => [r.to, r.label || r.to.toUpperCase()])).values()];
+    const canRead = new Set(routes.flatMap(r => r.from));
+    return el("details", { class: "cat" },
+      el("summary", {}, c.name, el("span", { class: "pill" + (routes.length ? " on" : "") }, routes.length ? "Converts" : "Not yet")),
+      el("div", { class: "cat-body" },
+        routes.length ? el("p", {}, "Can convert to: " + outs.join(", ") + ". Bright extensions can be converted; dimmed ones are recognised but not supported yet.")
+          : el("p", {}, `Not available in the browser yet. It would need ${c.engines || "specialised tools"}.${c.notes ? " " + c.notes : ""}`),
+        el("div", { class: "exts" }, c.extensions.map(e => el("code", { class: canRead.has(e) ? "yes" : "no" }, "." + e)))));
   });
-  cats.forEach(c => {
-    const b = document.createElement("button");
-    b.textContent = c.name.replace(/ &.*|,.*/, "");
-    b.title = c.name + (c.live ? "" : " (not available in the browser yet)");
-    b.dataset.id = c.id; b.setAttribute("role", "tab");
-    if (!c.live) b.classList.add("soon");
-    b.onclick = () => selectCat(c);
-    tabs.appendChild(b);
-  });
-  $("count").textContent = `${cats.filter(c => c.live).length} of ${cats.length} categories convert in your browser today; the rest are listed with what they would need.`;
-  let start = cats.find(c => c.id === 1);
-  try { start = cats.find(c => c.id == sessionStorage.getItem("cat")) || start; } catch {}
-  selectCat(start);
-}
-
-$("pick").onclick = e => { e.stopPropagation(); input.click(); };
-drop.onclick = () => input.click();
-input.onchange = () => { handle([...input.files]); input.value = ""; };
-drop.ondragover = e => { e.preventDefault(); drop.classList.add("over"); };
-drop.ondragleave = () => drop.classList.remove("over");
-drop.ondrop = e => { e.preventDefault(); drop.classList.remove("over"); handle([...e.dataTransfer.files]); };
-
-let chain = Promise.resolve();
-function handle(files) {
-  const to = target.value, c = cat;
-  for (const f of files) {
-    const li = document.createElement("li");
-    li.innerHTML = "<b></b><span class='st'>Queued</span>";
-    li.firstChild.textContent = f.name;
-    list.appendChild(li);
-    const st = li.querySelector(".st");
-    chain = chain.then(() => run(f, c, to, st));
-  }
-}
-async function run(f, c, to, st) {
-  const from = extOf(f.name);
-  const route = c.routes.find(r => r.to === to && r.from.includes(from));
-  if (!route) {
-    const ok = [...new Set(c.routes.filter(r => r.from.includes(from)).map(r => r.to))].filter(x => x !== from);
-    const other = cats.find(o => o.live && o.routes.some(r => r.from.includes(from)));
-    const known = cats.find(o => o.extensions.includes(from));
-    st.textContent = ok.length ? `Can't convert .${from} to .${to}. Try: ${ok.join(", ")}`
-      : other ? `.${from} belongs under "${other.name.replace(/ &.*|,.*/, "")}"`
-      : known ? `.${from} is recognised (${known.name}) but has no in-browser converter yet`
-      : `.${from} isn't in the catalogue`;
-    return;
-  }
-  const status = t => { st.textContent = t; };
-  status("Converting...");
-  try {
-    let out = await route.fn(f, { status });
-    const ext = out.ext || route.ext || to;
-    out = out.blob || out;
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(out);
-    a.download = f.name.replace(/\.[^.]+$/, "") + "." + ext;
-    a.textContent = "Download ." + ext;
-    st.replaceChildren(a);
-  } catch (err) {
-    st.textContent = "Failed: " + (err.message || err);
-  }
+  $("count").textContent = `${live} of ${catalogue.length} format families can be converted in your browser today. The rest are listed so you can see what's coming.`;
+  $("grid").replaceChildren(...items);
 }
 init();

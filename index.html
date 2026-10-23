@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Converter</title>
+<meta name="description" content="Convert documents, images, audio, video and data files right in your browser. Nothing is uploaded.">
 <script>
 // Cross-origin isolation via service worker (see coi-sw.js); reloads once after it takes control.
 if (window.crossOriginIsolated) {
@@ -20,50 +21,193 @@ if (window.crossOriginIsolated) {
     else sw.addEventListener("statechange", () => { if (sw.state === "activated") go(); });
   }).catch(() => {});
 }
+// apply the saved theme before first paint
+try { const t = localStorage.getItem("theme"); if (t) document.documentElement.dataset.theme = t; } catch {}
 </script>
 <style>
-  :root{--bg:#f6f7f9;--fg:#1c1f24;--card:#fff;--muted:#6b7280;--accent:#2563eb;--bd:#d6dae1}
-  @media (prefers-color-scheme:dark){:root{--bg:#111318;--fg:#e8eaed;--card:#1a1d24;--muted:#9aa1ad;--accent:#6b9bff;--bd:#2e333d}}
+  :root{
+    --bg:#f5f6fa;--surface:#fff;--surface-2:#f0f2f8;--border:#e1e5ef;--text:#151826;--muted:#5d6579;
+    --accent:#5b4bff;--accent-2:#0ea5e9;--accent-soft:rgba(91,75,255,.1);--ok:#16a34a;--ok-soft:rgba(22,163,74,.1);
+    --bad:#dc2626;--bad-soft:rgba(220,38,38,.08);--shadow:0 1px 2px rgba(20,24,40,.05),0 8px 24px rgba(20,24,40,.06);
+    --glow:radial-gradient(60% 50% at 50% 0,rgba(91,75,255,.12),transparent 70%);
+    color-scheme:light;
+  }
+  :root[data-theme=dark]{
+    --bg:#0b0d12;--surface:#131722;--surface-2:#1a1f2d;--border:#272d3f;--text:#e9ebf2;--muted:#9aa3b6;
+    --accent:#8577ff;--accent-2:#38bdf8;--accent-soft:rgba(133,119,255,.14);--ok:#34d399;--ok-soft:rgba(52,211,153,.12);
+    --bad:#f87171;--bad-soft:rgba(248,113,113,.1);--shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.25);
+    --glow:radial-gradient(60% 50% at 50% 0,rgba(133,119,255,.16),transparent 70%);
+    color-scheme:dark;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme=light]){
+      --bg:#0b0d12;--surface:#131722;--surface-2:#1a1f2d;--border:#272d3f;--text:#e9ebf2;--muted:#9aa3b6;
+      --accent:#8577ff;--accent-2:#38bdf8;--accent-soft:rgba(133,119,255,.14);--ok:#34d399;--ok-soft:rgba(52,211,153,.12);
+      --bad:#f87171;--bad-soft:rgba(248,113,113,.1);--shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.25);
+      --glow:radial-gradient(60% 50% at 50% 0,rgba(133,119,255,.16),transparent 70%);
+      color-scheme:dark;
+    }
+  }
   *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif}
-  main{max-width:720px;margin:0 auto;padding:32px 16px}
-  h1{margin:0 0 4px;font-size:28px}
-  p.sub{margin:0 0 20px;color:var(--muted)}
-  nav{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}
-  nav button{background:var(--card);color:var(--fg);border:1px solid var(--bd)}
-  nav button{padding:4px 10px;font-size:14px}
-  nav button.soon{opacity:.55}
-  #info{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:8px 20px}
-  [hidden]{display:none!important}
-  nav button[aria-selected=true]{background:var(--accent);color:#fff;border-color:var(--accent)}
-  .opts{display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap}
-  select{font:inherit;padding:6px 10px;border-radius:8px;border:1px solid var(--bd);background:var(--card);color:var(--fg)}
-  #drop{border:2px dashed var(--bd);border-radius:12px;background:var(--card);padding:36px 16px;text-align:center;cursor:pointer}
-  #drop.over{border-color:var(--accent)}
-  #drop p{margin:0}
-  button{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:8px 16px;font:inherit;cursor:pointer}
-  ul{list-style:none;padding:0;margin:20px 0}
-  li{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:10px 12px;margin-bottom:8px;display:flex;justify-content:space-between;gap:12px;align-items:center}
-  li b{overflow-wrap:anywhere;font-weight:600}
-  li span.st{color:var(--muted);font-size:14px;text-align:right}
-  a{color:var(--accent)}
-  small{color:var(--muted);display:block}
+  html{scroll-behavior:smooth}
+  body{margin:0;min-height:100vh;background:var(--glow) no-repeat top,var(--bg);color:var(--text);
+    font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:860px;margin:0 auto;padding:0 20px}
+  button{font:inherit;color:inherit;cursor:pointer}
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:8px}
+
+  /* header */
+  .top{display:flex;align-items:center;justify-content:space-between;padding:20px 0}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:18px;letter-spacing:-.01em;color:var(--text);text-decoration:none}
+  .brand svg{width:30px;height:30px}
+  .top-actions{display:flex;align-items:center;gap:6px}
+  .link{color:var(--muted);text-decoration:none;font-size:14px;padding:8px 12px;border-radius:10px}
+  .link:hover{color:var(--text);background:var(--surface-2)}
+  .icon-btn{width:38px;height:38px;border-radius:10px;border:1px solid var(--border);background:var(--surface);display:grid;place-items:center}
+  .icon-btn:hover{background:var(--surface-2)}
+  .icon-btn svg{width:18px;height:18px}
+
+  /* hero */
+  .hero{text-align:center;padding:36px 0 28px}
+  h1{margin:0 0 14px;font-size:clamp(32px,6vw,52px);line-height:1.08;letter-spacing:-.03em;font-weight:800}
+  .grad{background:linear-gradient(90deg,var(--accent),var(--accent-2));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .lead{margin:0 auto;max-width:540px;color:var(--muted);font-size:clamp(15px,2.4vw,18px)}
+
+  /* drop zone */
+  .drop{display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center;padding:44px 20px;border:2px dashed var(--border);
+    border-radius:20px;background:var(--surface);box-shadow:var(--shadow);cursor:pointer;transition:border-color .15s,background .15s,transform .15s}
+  .drop:hover,.drop.over{border-color:var(--accent);background:var(--accent-soft)}
+  .drop .ico{width:56px;height:56px;border-radius:16px;display:grid;place-items:center;color:#fff;
+    background:linear-gradient(135deg,var(--accent),var(--accent-2));box-shadow:0 8px 20px var(--accent-soft)}
+  .drop .ico svg{width:28px;height:28px}
+  .drop strong{font-size:19px;letter-spacing:-.01em}
+  .drop span{color:var(--muted);font-size:14.5px}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);
+    padding:9px 16px;border-radius:11px;font-weight:600;font-size:14.5px;text-decoration:none}
+  .btn:hover{background:var(--surface-2)}
+  .btn.primary{background:linear-gradient(135deg,var(--accent),var(--accent-2));color:#fff;border-color:transparent}
+  .btn.primary:hover{filter:brightness(1.07)}
+  .btn.small{padding:6px 12px;font-size:13.5px;border-radius:9px}
+  .trust{display:flex;flex-wrap:wrap;justify-content:center;gap:8px 18px;margin:16px 0 0;padding:0;list-style:none;color:var(--muted);font-size:13.5px}
+  .trust li{display:flex;align-items:center;gap:6px}
+  .trust svg{width:15px;height:15px;color:var(--ok)}
+
+  /* file cards */
+  #files{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;margin-top:24px}
+  .card,.body,.denied,.note{min-width:0;overflow-wrap:anywhere}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:16px;box-shadow:var(--shadow);animation:rise .25s ease both}
+  @keyframes rise{from{opacity:0;transform:translateY(6px)}}
+  .head{display:flex;align-items:center;gap:14px}
+  .badge{flex:none;width:46px;height:46px;border-radius:12px;display:grid;place-items:center;font-size:12px;font-weight:800;letter-spacing:.02em;text-transform:uppercase;color:#fff;background:#6b7280}
+  .k-image{background:linear-gradient(135deg,#f472b6,#ec4899)} .k-video{background:linear-gradient(135deg,#fb923c,#ef4444)}
+  .k-audio{background:linear-gradient(135deg,#a78bfa,#7c3aed)} .k-doc{background:linear-gradient(135deg,#60a5fa,#2563eb)}
+  .k-data{background:linear-gradient(135deg,#34d399,#059669)} .k-other{background:linear-gradient(135deg,#94a3b8,#64748b)}
+  .meta{min-width:0;flex:1}
+  .name{font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .sub{color:var(--muted);font-size:13.5px}
+  .x{flex:none;width:32px;height:32px;border-radius:9px;border:0;background:transparent;color:var(--muted);display:grid;place-items:center}
+  .x:hover{background:var(--surface-2);color:var(--text)}
+  .x svg{width:16px;height:16px}
+  .body{margin-top:14px;padding-top:14px;border-top:1px solid var(--border)}
+  .lbl{font-size:12.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:0 0 10px}
+  .chips{display:flex;flex-wrap:wrap;gap:8px}
+  .chip{border:1px solid var(--border);background:var(--surface-2);border-radius:999px;padding:7px 14px;font-weight:650;font-size:14px;display:inline-flex;align-items:center;gap:6px}
+  .chip:hover{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
+  .chip i{font-style:normal;font-size:11px;opacity:.6}
+  select.more{font:inherit;font-size:14px;font-weight:600;padding:7px 12px;border-radius:999px;border:1px dashed var(--border);background:transparent;color:var(--muted);cursor:pointer}
+  .note{margin:12px 0 0;padding:12px 14px;border-radius:12px;background:var(--accent-soft);font-size:14px;display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;justify-content:space-between}
+  .state{display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:space-between}
+  .state .msg{display:flex;align-items:center;gap:10px;min-width:0;font-size:14.5px}
+  .ok{color:var(--ok)} .bad{color:var(--bad)}
+  .state svg{width:20px;height:20px;flex:none}
+  .bar{height:6px;border-radius:99px;background:var(--surface-2);overflow:hidden;margin-top:12px}
+  .bar b{display:block;height:100%;width:40%;border-radius:99px;background:linear-gradient(90deg,var(--accent),var(--accent-2));animation:slide 1.2s ease-in-out infinite}
+  .bar b.det{animation:none;width:0;transition:width .3s}
+  @keyframes slide{0%{margin-left:-40%}100%{margin-left:100%}}
+  .denied{background:var(--bad-soft);border-radius:12px;padding:12px 14px;display:flex;gap:10px;align-items:flex-start;font-size:14.5px}
+  .denied svg{width:20px;height:20px;flex:none;color:var(--bad);margin-top:2px}
+  .tools{display:flex;justify-content:flex-end;gap:8px;margin-top:2px}
+
+  /* formats */
+  #formats{margin-top:64px;scroll-margin-top:16px}
+  h2{margin:0 0 6px;font-size:26px;letter-spacing:-.02em}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px;margin-top:18px}
+  details.cat{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:0}
+  details.cat summary{list-style:none;cursor:pointer;padding:13px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;font-weight:600;font-size:14.5px}
+  details.cat summary::-webkit-details-marker{display:none}
+  .pill{flex:none;font-size:11.5px;font-weight:700;padding:3px 9px;border-radius:99px;background:var(--surface-2);color:var(--muted)}
+  .pill.on{background:var(--ok-soft);color:var(--ok)}
+  details.cat[open]{grid-column:1/-1}
+  .cat-body{padding:0 14px 14px;color:var(--muted);font-size:14px}
+  .cat-body p{margin:0 0 8px}
+  .exts{display:flex;flex-wrap:wrap;gap:5px}
+  .exts code{font-size:12.5px;background:var(--surface-2);border-radius:6px;padding:2px 7px;color:var(--text)}
+  .exts code.yes{background:var(--accent-soft);color:var(--accent);font-weight:600}
+  .exts code.no{opacity:.5}
+  footer{margin:56px 0 40px;padding-top:24px;border-top:1px solid var(--border);color:var(--muted);font-size:13.5px}
+  footer ul{margin:8px 0 0;padding-left:18px}
+  footer li{margin:4px 0}
+
+  /* drag overlay */
+  #overlay{position:fixed;inset:0;z-index:50;display:grid;place-items:center;background:color-mix(in srgb,var(--bg) 82%,transparent);backdrop-filter:blur(6px)}
+  #overlay[hidden]{display:none}
+  #overlay div{padding:48px 64px;border:3px dashed var(--accent);border-radius:28px;background:var(--surface);font-size:22px;font-weight:700;text-align:center;box-shadow:var(--shadow)}
+  @media (max-width:520px){.drop{padding:32px 16px}.head{gap:10px}.badge{width:40px;height:40px}.top-actions .link{display:none}}
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 </style>
 </head>
 <body>
-<main>
-  <h1>Converter</h1>
-  <p class="sub">Convert files between formats. Everything runs in your browser; files never leave your device.</p>
-  <small id="count" style="margin-bottom:12px"></small>
-  <nav id="tabs" role="tablist"></nav>
-  <div id="work"><div class="opts"><label for="target">Convert to</label><select id="target"></select></div>
-  <div id="drop"><p>Drop files here or <button type="button" id="pick">choose files</button></p>
-    <input id="file" type="file" multiple hidden></div>
-  <small id="hint"></small>
-  <ul id="list"></ul></div>
-  <div id="info" hidden></div>
-  <small>Some converters use a large engine that downloads the first time you use it and is then cached: video and audio ~30 MB, extra image formats ~15 MB, document formats ~60 MB, old Office files (.doc, .xls, .ppt) and full-layout PDFs ~250 MB. Large videos can be slow, and the Office engine needs a few hundred MB of memory (Chrome, Edge or Firefox). PDF to Word works on text-based PDFs and rebuilds paragraphs and headings; tables and images are not preserved.</small>
-</main>
+<div class="wrap">
+  <header class="top">
+    <a class="brand" href="./">
+      <svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><rect width="32" height="32" rx="9" fill="url(#g)"/><path d="M9 12h12m0 0-3.5-3.5M21 12l-3.5 3.5M23 20H11m0 0 3.5-3.5M11 20l3.5 3.5" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><defs><linearGradient id="g" x1="0" y1="0" x2="32" y2="32"><stop stop-color="#7c6cff"/><stop offset="1" stop-color="#0ea5e9"/></linearGradient></defs></svg>
+      Converter
+    </a>
+    <div class="top-actions">
+      <a class="link" href="#formats">Supported formats</a>
+      <button class="icon-btn" id="theme" type="button" aria-label="Switch light or dark theme">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <h1>Convert any file.<br><span class="grad">Right in your browser.</span></h1>
+      <p class="lead">Drop a file and we'll show what it can become. Nothing is uploaded, your files never leave this device.</p>
+    </section>
+
+    <div class="drop" id="drop" role="button" tabindex="0" aria-label="Choose files to convert">
+      <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4m0 0L7 9m5-5 5 5"/><path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg></div>
+      <strong>Drop files anywhere, or click to browse</strong>
+      <span>Documents, images, audio, video, spreadsheets and more. You can also paste.</span>
+      <input id="file" type="file" multiple hidden>
+    </div>
+    <ul class="trust">
+      <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5 9-10"/></svg>Private, runs on your device</li>
+      <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5 9-10"/></svg>Free, no sign-up</li>
+      <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5 9-10"/></svg>Only shows conversions that work</li>
+    </ul>
+
+    <section id="files" aria-live="polite"></section>
+
+    <section id="formats">
+      <h2>Supported formats</h2>
+      <p class="sub" id="count">Loading...</p>
+      <div class="grid" id="grid"></div>
+    </section>
+
+    <footer>
+      <strong>Good to know</strong>
+      <ul>
+        <li>Some conversions use a large engine that downloads once and is then cached: video and audio ~30 MB, extra image formats ~15 MB, document formats ~60 MB, old Office files (.doc, .xls, .ppt) and full-layout PDFs ~250 MB. You're asked before anything big downloads.</li>
+        <li>PDF to Word works on text-based PDFs and rebuilds paragraphs and headings; tables and images are not preserved. Scanned PDFs need OCR, which isn't included.</li>
+        <li>Large videos can be slow, and the Office engine needs a few hundred MB of memory (Chrome, Edge or Firefox).</li>
+      </ul>
+    </footer>
+  </main>
+</div>
+<div id="overlay" hidden><div>Drop files to convert</div></div>
 <script src="app.js"></script>
 </body>
 </html>
