@@ -79,6 +79,8 @@ if (window.crossOriginIsolated) {
   .exts{display:flex;flex-wrap:wrap;gap:4px}
   .exts code{font-size:12.5px;padding:1px 6px;border:1px solid var(--line);border-radius:3px}
   .cat-body .lbl{margin:10px 0 4px}
+  .exts code.later{color:var(--muted)}
+  .cat-body p.why{color:var(--bad)}
   .exts code.yes{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 45%,transparent)}
   .exts code.no{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 45%,transparent)}
   .key{font-weight:600}
@@ -118,6 +120,6 @@ if (window.crossOriginIsolated) {
   </footer>
 </main>
 <div id="overlay" hidden><div>Drop files to convert</div></div>
-<script src="app.js"></script>
+<script src="app.js?v=2"></script>
 </body>
 </html>

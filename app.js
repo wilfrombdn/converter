@@ -684,12 +684,13 @@ addEventListener("paste", e => { if (e.clipboardData && e.clipboardData.files.le
 
 // ----- supported-formats reference -----
 async function init() {
-  catalogue = await (await fetch("catalogue.json")).json();
+  catalogue = await (await fetch("catalogue.json", { cache: "no-cache" })).json();
   ROUTES.filter(r => !r.cats).forEach(r => {
     const hit = catalogue.filter(c => c.extensions.includes(r.from[0])).map(c => c.id);
     r.cats = hit.length ? hit : [20];
   });
-  // Everything the catalogue lists stays visible: what the site can really do is green, the rest is red.
+  // Everything the catalogue lists stays visible: green converts today, plain could be added later,
+  // red is unrealistic in a browser (catalogue "unrealistic": closed formats, DRM, app projects, huge images).
   const OUT_ALIAS = { jpeg: "jpg", markdown: "md", tif: "tiff", audio: "mp3" };
   let live = 0;
   const items = catalogue.map(c => {
@@ -703,20 +704,24 @@ async function init() {
     const routeIns = new Set(routes.flatMap(r => r.from));
     const canRead = { has: e => routeIns.has(extOf("x." + e)) }; // .jpeg, .markdown, .text open as their short forms
     const readable = c.extensions.filter(e => canRead.has(e)).length;
-    const tag = !routes.length ? ["Not possible yet", " off"] : readable < c.extensions.length ? [`Partly, ${readable} of ${c.extensions.length} types`, " part"] : ["Converts", " on"];
+    const u = c.unrealistic || { extensions: [], outputs: [] }, badIn = new Set(u.extensions), badOut = new Set(u.outputs);
+    const cls = e => canRead.has(e) ? "yes" : badIn.has(e) ? "no" : "later";
+    const tip = { yes: "Converts today", later: "Not added yet, but possible in a browser", no: "Unrealistic in a browser" + (u.why ? ": " + u.why : "") };
+    const tag = readable === c.extensions.length ? ["Converts", " on"] : readable ? [`Partly, ${readable} of ${c.extensions.length} types`, " part"] : ["Not added yet", ""];
     return el("details", { class: "cat" },
       el("summary", {}, c.name, el("span", { class: "tag" + tag[1] }, tag[0])),
       el("div", { class: "cat-body" },
         routes.length ? null : el("p", {}, `Not available in the browser yet. It would need ${c.engines || "specialised tools"}.${c.notes ? " " + c.notes : ""}`),
+        u.why ? el("p", { class: "why" }, "Red: " + u.why) : null,
         el("p", { class: "lbl" }, "Opens"),
-        el("div", { class: "exts" }, c.extensions.map(e => el("code", { class: canRead.has(e) ? "yes" : "no", title: canRead.has(e) ? "Can be converted" : "Not possible in the browser yet" }, "." + e))),
+        el("div", { class: "exts" }, c.extensions.map(e => el("code", { class: cls(e), title: tip[cls(e)] }, "." + e))),
         el("p", { class: "lbl" }, "Converts to"),
         el("div", { class: "exts" },
-          [...outs.values()].map(o => el("code", { class: "yes", title: "Can be produced" }, o)),
-          missing.map(o => el("code", { class: "no", title: "Not possible in the browser yet" }, o)))));
+          [...outs.values()].map(o => el("code", { class: "yes", title: tip.yes }, o)),
+          missing.map(o => el("code", { class: badOut.has(o) ? "no" : "later", title: tip[badOut.has(o) ? "no" : "later"] }, o)))));
   });
   $("count").replaceChildren(`${live} of ${catalogue.length} format families can be converted in your browser today. `,
-    el("span", { class: "key yes" }, "Green"), " works, ", el("span", { class: "key no" }, "red"), " isn't possible yet.");
+    el("span", { class: "key yes" }, "Green"), " works today, grey could be added later, ", el("span", { class: "key no" }, "red"), " is unrealistic in a browser.");
   $("grid").replaceChildren(...items);
 }
 init();
