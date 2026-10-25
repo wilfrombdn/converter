@@ -72,11 +72,17 @@ if (window.crossOriginIsolated) {
   details.cat[open]{grid-column:1/-1}
   .tag{flex:none;color:var(--muted);font-size:13px}
   .tag.on{color:var(--ok)}
+  .tag.part{color:var(--fg)}
+  .tag.off{color:var(--bad)}
   .cat-body{padding:0 10px 10px;font-size:14px}
   .cat-body p{margin-bottom:6px;color:var(--muted)}
   .exts{display:flex;flex-wrap:wrap;gap:4px}
   .exts code{font-size:12.5px;padding:1px 6px;border:1px solid var(--line);border-radius:3px}
-  .exts code.no{opacity:.45}
+  .cat-body .lbl{margin:10px 0 4px}
+  .exts code.yes{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 45%,transparent)}
+  .exts code.no{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 45%,transparent)}
+  .key{font-weight:600}
+  .key.yes{color:var(--ok)} .key.no{color:var(--bad)}
   footer{margin-top:32px;padding-top:12px;border-top:1px solid var(--line);font-size:13px;color:var(--muted)}
   footer ul{margin:6px 0 0;padding-left:18px}
   #overlay{position:fixed;inset:0;z-index:50;display:grid;place-items:center;background:color-mix(in srgb,var(--bg) 88%,transparent)}

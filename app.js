@@ -689,20 +689,34 @@ async function init() {
     const hit = catalogue.filter(c => c.extensions.includes(r.from[0])).map(c => c.id);
     r.cats = hit.length ? hit : [20];
   });
+  // Everything the catalogue lists stays visible: what the site can really do is green, the rest is red.
+  const OUT_ALIAS = { jpeg: "jpg", markdown: "md", tif: "tiff", audio: "mp3" };
   let live = 0;
   const items = catalogue.map(c => {
     const routes = ROUTES.filter(r => r.cats.includes(c.id));
     if (routes.length) live++;
-    const outs = [...new Map(routes.map(r => [r.to, r.label || r.to.toUpperCase()])).values()];
-    const canRead = new Set(routes.flatMap(r => r.from));
+    const outs = new Map(routes.map(r => [r.to, r.label || r.to.toUpperCase()]));
+    const outExts = new Set(routes.map(r => r.ext || r.to));
+    // catalogue outputs the site can't produce, e.g. "searchable PDF" or "Parquet"
+    const missing = (c.outputs || "").split(",").map(s => s.trim()).filter(Boolean)
+      .filter(o => { const k = o.toLowerCase(); return !outExts.has(OUT_ALIAS[k] || k); });
+    const routeIns = new Set(routes.flatMap(r => r.from));
+    const canRead = { has: e => routeIns.has(extOf("x." + e)) }; // .jpeg, .markdown, .text open as their short forms
+    const readable = c.extensions.filter(e => canRead.has(e)).length;
+    const tag = !routes.length ? ["Not possible yet", " off"] : readable < c.extensions.length ? [`Partly, ${readable} of ${c.extensions.length} types`, " part"] : ["Converts", " on"];
     return el("details", { class: "cat" },
-      el("summary", {}, c.name, el("span", { class: "tag" + (routes.length ? " on" : "") }, routes.length ? "Converts" : "Not yet")),
+      el("summary", {}, c.name, el("span", { class: "tag" + tag[1] }, tag[0])),
       el("div", { class: "cat-body" },
-        routes.length ? el("p", {}, "Can convert to: " + outs.join(", ") + ". Normal extensions can be converted; dimmed ones are recognised but not supported yet.")
-          : el("p", {}, `Not available in the browser yet. It would need ${c.engines || "specialised tools"}.${c.notes ? " " + c.notes : ""}`),
-        el("div", { class: "exts" }, c.extensions.map(e => el("code", { class: canRead.has(e) ? "yes" : "no" }, "." + e)))));
+        routes.length ? null : el("p", {}, `Not available in the browser yet. It would need ${c.engines || "specialised tools"}.${c.notes ? " " + c.notes : ""}`),
+        el("p", { class: "lbl" }, "Opens"),
+        el("div", { class: "exts" }, c.extensions.map(e => el("code", { class: canRead.has(e) ? "yes" : "no", title: canRead.has(e) ? "Can be converted" : "Not possible in the browser yet" }, "." + e))),
+        el("p", { class: "lbl" }, "Converts to"),
+        el("div", { class: "exts" },
+          [...outs.values()].map(o => el("code", { class: "yes", title: "Can be produced" }, o)),
+          missing.map(o => el("code", { class: "no", title: "Not possible in the browser yet" }, o)))));
   });
-  $("count").textContent = `${live} of ${catalogue.length} format families can be converted in your browser today. Others are listed with what they would need.`;
+  $("count").replaceChildren(`${live} of ${catalogue.length} format families can be converted in your browser today. `,
+    el("span", { class: "key yes" }, "Green"), " works, ", el("span", { class: "key no" }, "red"), " isn't possible yet.");
   $("grid").replaceChildren(...items);
 }
 init();
